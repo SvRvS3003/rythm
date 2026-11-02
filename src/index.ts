@@ -787,6 +787,15 @@ route('PUT', '/api/admin/tracks/:id/rhythm', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
+route('GET', '/api/admin/fingerprints', async (req, env) => json({ tracks: await all(env, 'SELECT t.id,t.title,a.name artist,t.fingerprint fp FROM tracks t JOIN artists a ON a.id=t.artist_id WHERE t.fingerprint IS NOT NULL') }), 'admin');
+route('PUT', '/api/admin/tracks/:id/fingerprint', async (req, env, { params }) => {
+  const fp = (await body(req)).fp;
+  const text = JSON.stringify(fp);
+  if (!fp || typeof fp.h !== 'string' || !Array.isArray(fp.p) || fp.p.length !== 16 || text.length > 60000) return fail(400, 'Barmoq izi noto\'g\'ri');
+  const r = await run(env, 'UPDATE tracks SET fingerprint=? WHERE id=?', text, params.id);
+  return r.meta.changes ? json({ ok: true }) : fail(404, 'Qo\'shiq topilmadi');
+}, 'admin');
+
 route('DELETE', '/api/admin/tracks/:id', async (req, env, { params }) => {
   const t = await first(env, 'SELECT audio_key,rhythm_key FROM tracks WHERE id=?', params.id);
   if (!t) return fail(404, 'Qo\'shiq topilmadi');

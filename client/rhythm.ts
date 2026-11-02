@@ -25,7 +25,10 @@ function fft(re: Float64Array, im: Float64Array): void {
   }
 }
 
-export function analyzeWav(bytes: Uint8Array): Uint8Array {
+export const analyzeWav = (bytes: Uint8Array): Uint8Array => analyzeFull(bytes).map;
+
+// Band loudness is taken before each band is scaled, so it still tells how much bass or treble the song really has.
+export function analyzeFull(bytes: Uint8Array): { map: Uint8Array; bandPeaks: number[] } {
   const w = parseWav(bytes), v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const width = w.bitDepth / 8, step = width * w.channels, end = Math.min(bytes.length, w.dataOffset + w.dataSize);
   const sample = (p: number): number => {
@@ -35,8 +38,8 @@ export function analyzeWav(bytes: Uint8Array): Uint8Array {
     if (w.bitDepth === 24) return ((v.getInt8(p + 2) << 16) | v.getUint16(p, true)) / 8388608;
     return v.getInt32(p, true) / 2147483648;
   };
-  let size = 256;
-  while (size < w.sampleRate / 46) size <<= 1; // about 21 ms whatever the sample rate
+  // Nearest power of two to 21 ms, so 44.1 and 48 kHz copies of a song are measured with the same window.
+  const size = 2 ** Math.round(Math.log2(w.sampleRate / 46));
   const hann = Float64Array.from({ length: size }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / size));
   const edges = Array.from({ length: BANDS + 1 }, (_, i) => Math.max(1, Math.round(40 * Math.pow(16000 / 40, i / BANDS) * size / w.sampleRate)));
   const frames = Math.floor(w.duration * FPS), raw = new Float32Array(frames * BANDS);
@@ -58,11 +61,12 @@ export function analyzeWav(bytes: Uint8Array): Uint8Array {
     }
   }
   // Each band is scaled to its own loudest moment, so quiet highs still move the picture.
-  const out = new Uint8Array(raw.length);
+  const out = new Uint8Array(raw.length), bandPeaks: number[] = [];
   for (let b = 0; b < BANDS; b++) {
-    let peak = 1e-6;
-    for (let f = 0; f < frames; f++) peak = Math.max(peak, raw[f * BANDS + b]);
+    let peak = 1e-6, sum = 0;
+    for (let f = 0; f < frames; f++) { peak = Math.max(peak, raw[f * BANDS + b]); sum += raw[f * BANDS + b]; }
+    bandPeaks.push(sum / (frames || 1));
     for (let f = 0; f < frames; f++) out[f * BANDS + b] = Math.min(255, Math.round(255 * raw[f * BANDS + b] / peak));
   }
-  return out;
+  return { map: out, bandPeaks };
 }

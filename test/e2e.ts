@@ -288,6 +288,10 @@ assert.equal((await J(user('/api/me/seen', { method: 'POST', body: { at: seenAt 
 assert.equal((await J(user('/api/me'))).user.seenTrackAt, seenAt);
 await J(user('/api/me/seen', { method: 'POST', body: { at: seenAt - 100 } }));
 assert.equal((await J(user('/api/me'))).user.seenTrackAt, seenAt); ok('new-song announcement stays seen and never moves backwards');
+assert.equal((await J(user(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'PUT', body: { fp: { h: 'AA==', p: Array(16).fill(1) } } }))).s, 403);
+assert.equal((await J(admin(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'PUT', body: { fp: { h: 1 } } }))).s, 400);
+assert.equal((await J(admin(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'PUT', body: { fp: { h: 'AA==', p: Array(16).fill(1), t: 120, s: 1, d: 50 } } }))).s, 200);
+assert.ok((await J(admin('/api/admin/fingerprints'))).tracks.some((x: any) => x.id === T.id)); assert.equal((await J(user('/api/admin/fingerprints'))).s, 403); ok('fingerprints: admin only, validated');
 // Delete removes the R2 object
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}`, { method: 'DELETE' }))).s, 200);
 assert.equal((await anon(play.url)).status, 404); ok('deleting a track removes it');

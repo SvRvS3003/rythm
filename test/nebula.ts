@@ -1,9 +1,12 @@
 // JavaScript, test/nebula.ts, node + playwright: the player backdrop really draws, and stops when closed. Usage: node test/nebula.ts <outDir> [webkit|chromium]
+import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import assert from 'node:assert/strict';
 const OUT = process.argv[2] || 'dist/shots', name = process.argv[3] || 'chromium';
-const b = await (name === 'webkit' ? webkit : chromium).launch(name === 'chromium' ? { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] } : {});
-const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+const b = await (name === 'webkit' ? webkit : chromium).launch(name === 'chromium' ? { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', ...MUTE_ARGS] } : {});
+const mainCtx = await b.newContext({ viewport: { width: 390, height: 844 } });
+await silence(mainCtx);
+const p = await mainCtx.newPage();
 await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; });
 const errs = []; p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error' && !/fonts\.g/.test(m.text())) errs.push(m.text()); });
 await p.goto('http://127.0.0.1:8787');
@@ -157,7 +160,8 @@ console.log('  ok logo reacts and eases back to rest');
 await p.setViewportSize({ width: 390, height: 844 });
 // New song: a brand-new account sees it once, at its place on the home page.
 await p.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
-const fresh = await b.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' }); // network stubs cannot see through a service worker in WebKit
+const fresh = await b.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' });
+await silence(fresh); // network stubs cannot see through a service worker in WebKit
 const q = await fresh.newPage();
 await q.goto('http://127.0.0.1:8787/');
 await q.getByRole('link', { name: 'Android APK' }).waitFor({ timeout: 8000 });
@@ -216,6 +220,11 @@ assert.equal(await p.locator('.player .info .clip').first().textContent(), songT
 await p.locator('.player .info').click(); await p.waitForSelector('.now.show');
 const shownAt = await p.evaluate(() => document.querySelector('.now [data-cur]').textContent);
 assert.match(shownAt, /^0:2[5-9]$/, `reopened at ${shownAt}`);
+const PLAY_ICON = 'M7 4.5v15l13-7.5z';
+const icons = () => p.evaluate(() => [...document.querySelectorAll('.now .playbtn path, .player .playbtn path')].map(e => e.getAttribute('d')));
+await p.waitForTimeout(800); // past the silent unlock clip started by the tap
+assert.ok((await icons()).every(d => d === PLAY_ICON), `a reopened song must show the play icon: ${await icons()}`);
+console.log('  ok a reopened song shows the play icon');
 await p.waitForTimeout(1500);
 assert.equal(await p.locator('.player .info .clip').first().textContent(), songTitle, 'the unlock clip must not skip the song');
 assert.equal(await p.evaluate(() => { const a = (window as any).__a; return !!a && !a.paused && a.src.includes('/media/'); }), false, 'must not play by itself');

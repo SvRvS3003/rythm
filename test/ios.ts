@@ -1,4 +1,5 @@
 // JavaScript, test/ios.ts, node + playwright: glass only on iOS, and floating bars never hide content. Usage: node test/ios.ts [outDir]
+import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit } from 'playwright';
 import assert from 'node:assert/strict';
 const BASE = 'http://127.0.0.1:8787', OUT = process.argv[2] || 'dist/shots';
@@ -6,7 +7,9 @@ const IOS = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/
 const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36';
 const b = await webkit.launch();
 const open = async (ua, w, h) => {
-  const p = await (await b.newContext({ viewport: { width: w, height: h }, userAgent: ua })).newPage();
+  const c = await b.newContext({ viewport: { width: w, height: h }, userAgent: ua });
+  await silence(c);
+  const p = await c.newPage();
   await p.goto(BASE);
   await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
   await p.goto(BASE); await p.waitForSelector('.card');

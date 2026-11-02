@@ -1,4 +1,5 @@
 // TypeScript, test/offline.ts, node + playwright: a song saved, encrypted, played with no network, locked when the plan lapses. Usage: node test/offline.ts [webkit|chromium]
+import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -7,8 +8,9 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const BASE = 'http://127.0.0.1:8787', which = process.argv[2] || 'chromium';
-const b = await (which === 'webkit' ? webkit : chromium).launch(which === 'chromium' ? { args: ['--autoplay-policy=no-user-gesture-required'] } : {});
+const b = await (which === 'webkit' ? webkit : chromium).launch(which === 'chromium' ? { args: ['--autoplay-policy=no-user-gesture-required', ...MUTE_ARGS] } : {});
 const ctx = await b.newContext({ viewport: { width: 390, height: 844 } });
+await silence(ctx);
 const p = await ctx.newPage();
 const errs: string[] = []; p.on('pageerror', e => { if (!/access control|Load failed|Failed to fetch/.test(e.message)) errs.push(e.message); });
 await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; });

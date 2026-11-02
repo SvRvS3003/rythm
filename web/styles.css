@@ -293,6 +293,12 @@ html.ios .player .cover { border-radius: 16px; } /* follows the capsule: its 24 
 .ib.off { visibility: hidden; }
 .offline-list .tr .btn { flex: none; }
 .offline-list .hit:disabled { opacity: .55; }
+.preview { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: #ffffff0a; min-width: 0; }
+.preview audio { width: 100%; height: 40px; }
+.preview .verdict { font-size: 13px; overflow-wrap: anywhere; }
+.preview .verdict.same { color: var(--bad); font-weight: 700; }
+.preview .verdict.similar { color: var(--a2); }
+.preview .verdict.ok { color: var(--ok); }
 /* motion */
 .view.quiet > * { animation: none; }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }

@@ -57,7 +57,7 @@ export const icon = (name: string, size = 22): SVGSVGElement => {
 // Temporary page data: a page opens at once from here, refreshes behind the scenes, and a newer answer replaces the old one.
 const store = new Map<string, { json: string; at: number }>();
 const FRESH_MS = 15000;
-const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users|offline)/; // live or one-off answers
+const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users|admin\/fingerprints|offline)/; // live or one-off answers
 const KEEP = ['/api/me', '/api/home', '/api/library', '/api/plans']; // also survive closing the app, so it opens instantly
 const NO_INVALIDATE = /^\/api\/(play$|plays\/|ads\/|me\/seen)/; // frequent writes that change no page
 const pending = new Map<string, Promise<unknown>>();
@@ -337,7 +337,7 @@ audio.addEventListener('timeupdate', () => {
   lockFrame();
   if (performance.now() - savedAt > 5000) saveListening();
 });
-audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); });
+audio.addEventListener('play', () => { if (audio.src !== SILENT) syncPlayer(); wakeLogo(); });
 audio.addEventListener('pause', () => { saveListening(); syncPlayer(); wakeLogo(); lockFrame(true); });
 audio.addEventListener('error', () => {
   if (P.ad || !P.track || audio.src === SILENT) return;
@@ -351,7 +351,7 @@ audio.addEventListener('waiting', () => { wakeLogo(); syncPlayer(); });
 audio.addEventListener('durationchange', () => syncPosition());
 
 function syncPosition() {
-  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = shownPaused() ? 'paused' : 'playing';
   try { if (isFinite(audio.duration)) navigator.mediaSession?.setPositionState({ duration: audio.duration, position: Math.min(audio.currentTime, audio.duration), playbackRate: audio.playbackRate }); } catch { /* older iOS */ }
 }
 function syncMediaSession() {
@@ -368,7 +368,7 @@ function syncMediaSession() {
   }
 }
 function syncNative() {
-  win.RythmNative?.updateMedia?.(JSON.stringify({ title: P.track?.title || '', artist: P.track?.artist || '', cover: P.track?.cover ? new URL(P.track.cover, location.href).href : '', playing: !audio.paused }));
+  win.RythmNative?.updateMedia?.(JSON.stringify({ title: P.track?.title || '', artist: P.track?.artist || '', cover: P.track?.cover ? new URL(P.track.cover, location.href).href : '', playing: !shownPaused() }));
 }
 const CMDS: Record<string, () => unknown> = { play: resumePlay, pause: pausePlay, next: P_next, prev: P_prev };
 win.__nativeCmd = (c: string) => CMDS[c]?.();
@@ -392,6 +392,8 @@ function seekBar() {
   s.addEventListener('change', () => { if (P.resume !== null) P.resume = Number(s.value); else audio.currentTime = Number(s.value); delete s.dataset.drag; P.last = Number(s.value); saveListening(); });
   return s;
 }
+// What the buttons show. A restored song waiting at its second and the silent unlock clip both count as stopped.
+const shownPaused = (): boolean => audio.paused || audio.ended || P.resume !== null || audio.src === SILENT;
 const quality = (t: Track): string => `WAV · ${t.bitDepth}-bit · ${(t.sampleRate / 1000).toFixed(t.sampleRate % 1000 ? 1 : 0)} kHz`;
 const iconBtn = (name: string, label: string, onclick: (e: Event) => unknown, cls = '', size?: number) => h('button', { class: `ib ${cls}`, 'aria-label': label, title: label, onclick }, icon(name, size));
 function likeBtn(t: Track, cls = ''): HTMLButtonElement {
@@ -421,7 +423,7 @@ function syncPlayer() {
   const t = P.track;
   el.classList.toggle('show', !!t);
   if (!t) return;
-  const paused = audio.paused;
+  const paused = shownPaused();
   if (el.dataset.id !== t.id) {
     el.dataset.id = t.id;
     ui.thin = h('i');
@@ -738,7 +740,7 @@ function renderNow(mode?: string): void {
       h('div', { class: 'ctl' },
         iconBtn('shuffle', 'Aralash', () => { P.shuffle = !P.shuffle; syncPlayer(); }, P.shuffle ? 'on' : ''),
         iconBtn('prev', 'Oldingi', P_prev, '', 30),
-        h('button', { class: 'playbtn big', 'aria-label': 'Ijro', onclick: toggle }, icon(audio.paused ? 'play' : 'pause', 30)),
+        h('button', { class: 'playbtn big', 'aria-label': 'Ijro', onclick: toggle }, icon(shownPaused() ? 'play' : 'pause', 30)),
         iconBtn('next', 'Keyingi', P_next, '', 30),
         iconBtn(repeatIcon(), REPEAT_LABEL[P.repeat], cycleRepeat, P.repeat !== 'off' ? 'on' : '')),
       h('div', { class: 'row between' },

@@ -1,12 +1,15 @@
 // TypeScript, test/lockscreen.ts, node + playwright: while hidden, a song without a cover hands the OS changing logo frames.
+import { MUTE_ARGS, silence } from './silent.ts';
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const b = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
-const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+const b = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', ...MUTE_ARGS] });
+const lc = await b.newContext({ viewport: { width: 390, height: 844 } });
+await silence(lc);
+const p = await lc.newPage();
 const errs: string[] = []; p.on('pageerror', e => errs.push(e.message));
 await p.addInitScript(() => { const handlers: Record<string, () => void> = {}; (window as any).__ms = handlers; const set = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession); navigator.mediaSession.setActionHandler = (n: any, h: any) => { handlers[n] = h; set(n, h); }; const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; let hide = false; Object.defineProperty(document, 'hidden', { get: () => hide }); (window as any).__hide = (v: boolean) => { hide = v; document.dispatchEvent(new Event('visibilitychange')); }; });
 await p.goto('http://127.0.0.1:8787');

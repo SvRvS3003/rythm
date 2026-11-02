@@ -1,5 +1,6 @@
 // TypeScript, client/admin.ts, browser: the single admin panel. Loaded only for admins; the API enforces the role.
-import { analyzeWav } from './rhythm.ts';
+import { analyzeFull, analyzeWav } from './rhythm.ts';
+import { compare, makeFingerprint, type Comparison, type Fingerprint } from './fingerprint.ts';
 import { h, api, cover, fmt, money, toast, sheet, refresh, go, S, type Row } from './app.ts';
 
 const guard = <A extends unknown[]>(fn: (...a: A) => unknown) => async (...a: A): Promise<void> => { try { await fn(...a); } catch (e) { toast((e as Error).message); } };
@@ -31,6 +32,28 @@ async function uploadImage(file?: File | null): Promise<string | null> {
   if (!file) return null;
   return (await api('/api/admin/images', { method: 'POST', raw: await shrinkCover(file) })).key;
 }
+// Listens to a chosen file and compares it with every song already on the platform. The file stays on this device.
+interface Check { map?: Uint8Array; fp?: Fingerprint; error?: string; match?: { title: string; artist: string; c: Comparison } }
+async function checkFile(file: File, known: Row[]): Promise<Check> {
+  if (!/\.wav$/i.test(file.name)) return { error: `${file.name}: faqat .wav fayl qabul qilinadi` };
+  try {
+    const { map, bandPeaks } = analyzeFull(new Uint8Array(await file.arrayBuffer()));
+    const fp = makeFingerprint(map, bandPeaks);
+    let match: Check['match'];
+    const rank = { same: 2, similar: 1, different: 0 };
+    for (const k of known) {
+      const c = compare(fp, typeof k.fp === 'string' ? JSON.parse(k.fp) : k.fp);
+      if (c.level !== 'different' && (!match || rank[c.level] > rank[match.c.level] || (rank[c.level] === rank[match.c.level] && c.sound > match.c.sound))) match = { title: k.title, artist: k.artist, c };
+    }
+    return { map, fp, match };
+  } catch (e) { return { error: `Faqat WAV qabul qilinadi: ${(e as Error).message}` }; }
+}
+const pct = (v: number): string => `${Math.round(v * 100)}%`;
+const details = (c: Comparison): string => `tovush ${pct(c.sound)}, chastota ${pct(c.frequency)}, ritm ${pct(c.rhythm)}`;
+const askDuplicate = (file: File, m: NonNullable<Check['match']>): Promise<boolean> => new Promise(res => {
+  sheet(close => [h('h2', null, 'Bu qo\'shiq allaqachon bor'), h('p', { class: 'muted', style: 'overflow-wrap:anywhere' }, `"${file.name}" tovushi "${m.title}" (${m.artist}) bilan bir xil: ${details(m.c)}.`),
+    h('button', { class: 'btn pri', onclick: () => { close(); res(false); } }, 'Yuklamaslik'), h('button', { class: 'btn', onclick: () => { close(); res(true); } }, 'Baribir yuklash')]);
+});
 const uploadRhythm = (id: string, wav: Uint8Array) => api(`/api/admin/tracks/${id}/rhythm`, { method: "PUT", raw: analyzeWav(wav) as BodyInit });
 
 // Client check is only for fast feedback; the Worker re-validates on first part and on completion.
@@ -105,33 +128,69 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
     const files = h('input', { type: 'file', accept: '.wav,audio/wav,audio/x-wav', multiple: true, required: true });
     const titleInput = h('input', { placeholder: 'Bo\'sh qolsa, fayl nomi olinadi' });
     const btn = h('button', { class: 'btn pri' }, 'Yuklash');
+    const previews = h('div', { class: 'stack' });
+    let urls: string[] = [];
+    const checks = new Map<File, Promise<Check>>();
+    const known = api('/api/admin/fingerprints').then(r => r.tracks as Row[]).catch(() => [] as Row[]);
+    files.addEventListener('change', () => {
+      urls.forEach(u => URL.revokeObjectURL(u));
+      urls = [];
+      checks.clear();
+      previews.replaceChildren(...[...files.files!].map(file => {
+        const url = URL.createObjectURL(file);
+        urls.push(url);
+        const verdict = h('div', { class: 'verdict muted' }, 'Tovush tekshirilmoqda…');
+        const check = known.then(k => checkFile(file, k));
+        checks.set(file, check);
+        check.then(r => {
+          if (r.error) { verdict.textContent = r.error; verdict.className = 'verdict same'; return; }
+          if (!r.match) { verdict.textContent = 'Yangi qo\'shiq: platformada o\'xshashi yo\'q'; verdict.className = 'verdict ok'; return; }
+          const same = r.match.c.level === 'same';
+          verdict.textContent = `${same ? 'Bu qo\'shiq allaqachon bor' : 'O\'xshash qo\'shiq bor'}: "${r.match.title}" (${r.match.artist}), ${details(r.match.c)}`;
+          verdict.className = `verdict ${same ? 'same' : 'similar'}`;
+        });
+        return h('div', { class: 'preview' }, h('div', { class: 'small clip', style: 'font-weight:700' }, file.name), h('audio', { controls: true, preload: 'metadata', src: url, 'aria-label': `${file.name} ni tinglash` }), verdict);
+      }));
+    });
     el.append(
       h('form', { class: 'panel', onsubmit: async (e: Event) => {
         e.preventDefault();
         btn.disabled = true;
+        for (const a of previews.querySelectorAll('audio')) a.pause();
         try {
+          let skipped = 0;
           const coverKey = await uploadImage(cov.files?.[0]);
           for (const file of files.files!) {
             const bar = h('i'), status = h('div', { class: 'small muted clip' }, file.name);
             list.append(h('div', { class: 'stack', style: 'gap:6px' }, status, h('div', { class: 'progress' }, bar)));
             try {
+              const check = await (checks.get(file) || known.then(k => checkFile(file, k)));
+              if (check.error) throw new Error(check.error);
+              if (check.match?.c.level === 'same' && !await askDuplicate(file, check.match)) {
+                status.textContent = `${file.name}: yuklanmadi, "${check.match.title}" allaqachon bor`;
+                skipped++;
+                continue;
+              }
               const up = await uploadWav(file, 'audio', p => { bar.style.width = `${p * 100}%`; });
               const title = (files.files!.length === 1 && titleInput.value) || file.name.replace(/\.wav$/i, '');
               const made = await api('/api/admin/tracks', { method: 'POST', body: { key: up.key, title, artist: artist.value, album: album.value, genre: genre.value, year: year.value || null, lyrics: lyrics.value, coverKey } });
               // The song is already safe in R2; a failed map only means the visual falls back until it is rebuilt from Qo'shiqlar.
-              await uploadRhythm(made.id, new Uint8Array(await file.arrayBuffer())).catch(() => toast('Ritm xaritasi tayyorlanmadi'));
+              await api(`/api/admin/tracks/${made.id}/rhythm`, { method: 'PUT', raw: check.map as BodyInit }).catch(() => toast('Ritm xaritasi tayyorlanmadi'));
+              await api(`/api/admin/tracks/${made.id}/fingerprint`, { method: 'PUT', body: { fp: check.fp } }).catch(() => {});
+              (await known).push({ title, artist: artist.value, fp: check.fp }); // files in the same batch are compared too
               status.textContent = `✓ ${title} · WAV ${up.bitDepth}-bit ${up.sampleRate} Hz · ${fmt(up.duration)}`;
             } catch (x) { status.textContent = `✕ ${file.name}: ${(x as Error).message}`; status.className = 'err'; }
           }
           toast('Yuklash tugadi');
           // Only when every file made it; a failed one stays on screen with its reason.
-          if (![...list.querySelectorAll('.err')].length) { setTimeout(() => go('/'), 900); return; }
+          if (![...list.querySelectorAll('.err')].length && !skipped) { setTimeout(() => go('/'), 900); return; }
         } catch (x) { toast((x as Error).message); }
         btn.disabled = false;
       } },
         h('h2', null, 'Yangi musiqa'),
         h('p', { class: 'muted small' }, 'Faqat WAV (PCM) qabul qilinadi va R2 ga aynan shu holda saqlanadi. Sifat o\'zgarmaydi.'),
         field('WAV fayl(lar)', files),
+        previews,
         h('div', { class: 'two' }, field('Qo\'shiq nomi', titleInput), field('Ijrochi', artist), field('Albom', album), field('Janr', genre), field('Yil', year), field('Muqova rasmi', cov)),
         field('Matn', lyrics),
         h('datalist', { id: 'dl-artists' }, d.artists.map((a: Row) => h('option', { value: a.name }))),

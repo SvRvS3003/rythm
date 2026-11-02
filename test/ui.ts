@@ -1,4 +1,5 @@
 // JavaScript, test/ui.ts, node + playwright: layout overflow sweep and real playback against local dev.
+import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
@@ -10,8 +11,9 @@ mkdirSync(OUT, { recursive: true });
 const tmp = mkdtempSync(join(tmpdir(), 'ui-'));
 const SIZES = { 'iphone-se': [320, 568], 'iphone-16': [390, 844], 'promax': [430, 932], 'duo-outer': [466, 678], 'duo-inner': [626, 890], 'duo-inner-land': [890, 626], 'phone-land': [844, 390], 'tablet': [820, 1180], 'desktop': [1440, 900] };
 const engine = process.env.ENGINE === 'chromium' ? chromium : webkit;
-const b = await engine.launch();
+const b = await engine.launch({ args: engine === chromium ? MUTE_ARGS : [] });
 const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, ...(process.env.UA ? { userAgent: process.env.UA } : {}) });
+await silence(ctx);
 const p = await ctx.newPage();
 const problems = [];
 p.on('console', m => { if (m.type() === 'error' && !/fonts\.g|access control checks/.test(m.text())) problems.push(`console: ${m.text().slice(0, 200)}`); });

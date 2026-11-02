@@ -1,4 +1,5 @@
 // JavaScript, test/playback.ts, node + playwright: auto-advance and switch delay against local dev. Usage: node test/playback.ts [webkit|chromium]
+import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
@@ -6,8 +7,9 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const BASE = 'http://127.0.0.1:8787', tmp = mkdtempSync(join(tmpdir(), 'pb-'));
-const b = await (process.argv[2] === 'chromium' ? chromium : webkit).launch({ args: process.argv[2] === 'chromium' ? ['--autoplay-policy=no-user-gesture-required'] : [] });
+const b = await (process.argv[2] === 'chromium' ? chromium : webkit).launch({ args: process.argv[2] === 'chromium' ? ['--autoplay-policy=no-user-gesture-required', ...MUTE_ARGS] : [] });
 const ctx = await b.newContext({ viewport: { width: 390, height: 844 } });
+await silence(ctx);
 const p = await ctx.newPage();
 await p.addInitScript(() => {
   const log: any[] = (window as any).__log = [];
