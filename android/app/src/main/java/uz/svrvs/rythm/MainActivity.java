@@ -68,7 +68,8 @@ public class MainActivity extends Activity {
         });
         web.setDownloadListener((url, ua, cd, mime, len) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))));
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
-        PollJob.schedule(this);
+        // News is optional; a problem with it must never stop the music app from opening.
+        try { PollJob.schedule(this); } catch (RuntimeException e) { android.util.Log.w("rythm", e); }
         if (state != null) web.restoreState(state);
         else web.loadUrl(BuildConfig.BASE_URL + "/");
     }

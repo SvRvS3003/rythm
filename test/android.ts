@@ -1,5 +1,5 @@
 // JavaScript, test/android.ts, node + adb: drives the real APK against production. Reads .prod.vars, never prints it.
-// Needs a booted emulator with 1.0.0 installed and dist/SvRvS-Rythm-1.0.3.apk built. Publishes 1.0.2 as the live release.
+// Needs a booted emulator with 1.0.0 installed and dist/SvRvS-Rythm-1.0.4.apk built. Publishes 1.0.2 as the live release.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -92,7 +92,7 @@ await (async () => { try {
   const cached = /uz\.svrvs\.rythm/.test(adb('shell', 'ps', '-A')); assert.ok(cached);
   if (process.env.SKIP_UPDATE) return await finishEarly(); // through `finally`, so test data and settings are restored
   // Self-update without any store.
-  await api(`/api/admin/releases?versionCode=4&versionName=1.0.3&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.3.apk') });
+  await api(`/api/admin/releases?versionCode=5&versionName=1.0.4&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.4.apk') });
   adb('shell', 'appops', 'set', PKG, 'REQUEST_INSTALL_PACKAGES', 'allow');
   adb('shell', 'am', 'force-stop', PKG); adb('shell', 'am', 'start', '-n', `${PKG}/.MainActivity`);
   await find(byText('Yangilash'), 'update prompt', 60000);
@@ -102,9 +102,9 @@ await (async () => { try {
   shot('confirm');
   adb('shell', 'input', 'tap', String(inst.x), String(inst.y));
   let v = ''; const vEnd = Date.now() + 60000;
-  while (Date.now() < vEnd) { v = adb('shell', 'dumpsys', 'package', PKG); if (/versionCode=4/.test(v)) break; await wait(2000); }
-  assert.match(v, /versionCode=4/); ok('APK updated itself from 1.0.2 to 1.0.3');
-  assert.match(v, /versionName=1\.0\.3/);
+  while (Date.now() < vEnd) { v = adb('shell', 'dumpsys', 'package', PKG); if (/versionCode=5/.test(v)) break; await wait(2000); }
+  assert.match(v, /versionCode=5/); ok('APK updated itself from 1.0.2 to 1.0.4');
+  assert.match(v, /versionName=1\.0\.4/);
 } finally {
   for (const id of ids) await api(`/api/admin/tracks/${id}`, { method: 'DELETE' }).catch(() => {});
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: before.ad_every, plans_enabled: before.plans_enabled === '1' } }).catch(() => {});
