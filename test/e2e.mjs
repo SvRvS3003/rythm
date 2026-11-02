@@ -74,6 +74,8 @@ assert.equal((await anon(`/media/${up.key}`)).status, 404); ok('tampered links r
 const c1 = await J(user(`/api/plays/${play.playId}/counted`, { method: 'POST' })); assert.equal(c1.counted, false); ok('a play is not counted before listening time');
 // Ads: ad_every=3, one play already made.
 assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { ad_every: 3, ad_seconds: 3, plans_enabled: true } }))).s, 200);
+const settle = () => new Promise(r => setTimeout(r, 11000)); // settings cache TTL
+await settle();
 const P = () => J(user('/api/play', { method: 'POST', body: { trackId: T.id } }));
 assert.ok((await P()).url); assert.ok((await P()).url);
 const adr = await P(); assert.ok(adr.ad && !adr.url); ok('4th play returns an ad and no stream URL');
@@ -85,8 +87,10 @@ assert.ok((await P()).url); ok('after waiting, ad completes and playback resumes
 // Plan toggle & exempt list
 assert.ok((await P()).url); assert.ok((await P()).url); assert.ok((await P()).ad);
 await J(admin('/api/admin/settings', { method: 'PATCH', body: { plans_enabled: false } }));
+await settle();
 assert.ok((await P()).url); assert.equal((await J(user('/api/me'))).user.entitlement.reason, 'plans_off'); ok('one toggle off: nobody gets ads');
 await J(admin('/api/admin/settings', { method: 'PATCH', body: { plans_enabled: true } }));
+await settle();
 assert.ok((await P()).ad);
 const me = (await J(user('/api/me'))).user;
 await J(admin(`/api/admin/users/${me.id}`, { method: 'PATCH', body: { planExempt: true } }));
@@ -121,13 +125,16 @@ assert.equal((await J(friend('/api/me'))).user, null); ok('ban ends the session'
 // Stats, install, releases
 const stats = await J(admin('/api/admin/stats')); assert.ok(stats.users >= 2); assert.ok(stats.storage.bytes >= big.length);
 const mc = await anon('/dl/ios.mobileconfig'); assert.equal(mc.headers.get('content-type'), 'application/x-apple-aspen-config'); assert.match(await mc.text(), /com\.apple\.webClip\.managed/); ok('stats and iOS web clip profile');
-assert.equal((await J(admin('/api/admin/releases?versionCode=1&versionName=x', { method: 'POST', raw: 'not apk' }))).s, 415);
-const apk = Buffer.concat([Buffer.from([0x50, 0x4b, 3, 4]), Buffer.alloc(100)]), code = Math.floor(Date.now() / 1000);
-assert.equal((await J(admin(`/api/admin/releases?versionCode=${code}&versionName=9.9`, { method: 'POST', raw: apk }))).s, 201);
-assert.equal((await J(admin(`/api/admin/releases?versionCode=${code}&versionName=9.9`, { method: 'POST', raw: apk }))).s, 409);
-const latest = (await J(anon('/api/app/latest'))).release; assert.equal(latest.versionCode, code);
-assert.equal((await anon('/dl/android')).status, 302);
-await J(admin(`/api/admin/releases/${latest.id}`, { method: 'DELETE' })); ok('APK release: magic checked, version must grow, public latest works');
+const cur = (await J(anon('/api/app/latest'))).release?.versionCode || 0;
+const apk = Buffer.concat([Buffer.from([0x50, 0x4b, 3, 4]), Buffer.alloc(100)]);
+assert.equal((await J(admin(`/api/admin/releases?versionCode=${cur + 1}&versionName=x`, { method: 'POST', raw: 'not apk' }))).s, 415);
+if (cur) assert.equal((await J(admin(`/api/admin/releases?versionCode=${cur}&versionName=x`, { method: 'POST', raw: apk }))).s, 409);
+else { // Never publish a fake build over a real release.
+  assert.equal((await J(admin('/api/admin/releases?versionCode=1&versionName=9.9', { method: 'POST', raw: apk }))).s, 201);
+  const l = (await J(anon('/api/app/latest'))).release; assert.equal((await anon('/dl/android')).status, 302);
+  await J(admin(`/api/admin/releases/${l.id}`, { method: 'DELETE' }));
+}
+ok('APK release: magic checked, version must grow');
 // Delete removes the R2 object
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}`, { method: 'DELETE' }))).s, 200);
 assert.equal((await anon(play.url)).status, 404); ok('deleting a track removes it');

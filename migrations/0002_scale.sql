@@ -1,0 +1,13 @@
+CREATE INDEX users_last_seen ON users(last_seen);
+CREATE INDEX users_created ON users(created_at);
+CREATE INDEX users_plan_expires ON users(plan_expires);
+CREATE INDEX users_family ON users(family_owner_id);
+CREATE INDEX users_exempt ON users(plan_exempt) WHERE plan_exempt=1;
+CREATE INDEX sessions_user ON sessions(user_id);
+CREATE INDEX sessions_expires ON sessions(expires);
+CREATE INDEX attempts_at ON attempts(at);
+CREATE INDEX plays_track ON plays(track_id);
+CREATE INDEX likes_track ON likes(track_id);
+CREATE INDEX playlist_tracks_track ON playlist_tracks(track_id);
+CREATE INDEX ad_views_started ON ad_views(started_at);
+CREATE INDEX ad_views_user ON ad_views(user_id);

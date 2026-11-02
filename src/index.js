@@ -60,6 +60,17 @@ async function limited(env, key, max, windowSec) {
 const note = (env, key) => run(env, 'INSERT INTO attempts (k,at) VALUES (?,?)', key, now());
 const ip = req => req.headers.get('cf-connecting-ip') || 'local';
 
+// Per-isolate read cache: hot, rarely changing reads stop reaching the single D1 primary.
+const memoStore = new Map();
+async function memo(key, ttlSec, fn) {
+  const hit = memoStore.get(key);
+  if (hit && hit.exp > Date.now()) return hit.val;
+  const val = await fn();
+  memoStore.set(key, { val, exp: Date.now() + ttlSec * 1000 });
+  return val;
+}
+const liveSettings = env => memo('settings', 10, () => settings(env));
+
 async function settings(env) {
   const out = {};
   for (const r of await all(env, 'SELECT key,value FROM settings')) out[r.key] = r.value;
@@ -121,7 +132,7 @@ route('POST', '/api/auth/logout', async (req, env) => {
 }, null);
 
 route('GET', '/api/me', async (req, env) => {
-  const s = await settings(env);
+  const s = await liveSettings(env);
   const u = await currentUser(env, req);
   if (!u) return json({ user: null, settings: publicSettings(s) });
   if (now() - u.last_seen > 300) await run(env, 'UPDATE users SET last_seen=? WHERE id=?', now(), u.id);
@@ -146,17 +157,24 @@ const mapArtist = a => ({ id: a.id, name: a.name, bio: a.bio, image: media(a.ima
 const ALBUM_SQL = 'SELECT al.*,a.name artist FROM albums al JOIN artists a ON a.id=al.artist_id';
 
 route('GET', '/api/home', async (req, env, { user }) => {
-  const [promoted, fresh, popular, recent, albums, artists, genres, editorial] = await Promise.all([
-    tracks(env, 'WHERE t.published=1 AND t.promoted=1 ORDER BY t.created_at DESC LIMIT 6'),
-    tracks(env, 'WHERE t.published=1 ORDER BY t.created_at DESC LIMIT 16'),
-    tracks(env, 'WHERE t.published=1 ORDER BY t.play_count DESC, t.created_at DESC LIMIT 16'),
+  const loadShared = async () => {
+    const [promoted, fresh, popular, albums, artists, genres, editorial] = await Promise.all([
+      tracks(env, 'WHERE t.published=1 AND t.promoted=1 ORDER BY t.created_at DESC LIMIT 6'),
+      tracks(env, 'WHERE t.published=1 ORDER BY t.created_at DESC LIMIT 16'),
+      tracks(env, 'WHERE t.published=1 ORDER BY t.play_count DESC, t.created_at DESC LIMIT 16'),
+      all(env, `${ALBUM_SQL} WHERE al.id IN (SELECT album_id FROM tracks WHERE published=1) ORDER BY al.created_at DESC LIMIT 12`),
+      all(env, 'SELECT * FROM artists WHERE id IN (SELECT artist_id FROM tracks WHERE published=1) ORDER BY created_at DESC LIMIT 12'),
+      all(env, "SELECT genre,COUNT(*) c FROM tracks WHERE published=1 AND genre<>'' GROUP BY genre ORDER BY c DESC LIMIT 12"),
+      all(env, 'SELECT id,name FROM playlists WHERE public=1 ORDER BY created_at DESC LIMIT 12'),
+    ]);
+    return { promoted, fresh, popular, albums: albums.map(mapAlbum), artists: artists.map(mapArtist), genres: genres.map(g => g.genre), editorial };
+  };
+  // The admin sees a new upload at once; listeners within 30 s.
+  const [shared, recent] = await Promise.all([
+    user.role === 'admin' ? loadShared() : memo('home', 30, loadShared),
     tracks(env, 'WHERE t.published=1 AND t.id IN (SELECT track_id FROM plays WHERE user_id=? ORDER BY started_at DESC LIMIT 40) LIMIT 8', user.id),
-    all(env, `${ALBUM_SQL} WHERE al.id IN (SELECT album_id FROM tracks WHERE published=1) ORDER BY al.created_at DESC LIMIT 12`),
-    all(env, 'SELECT * FROM artists WHERE id IN (SELECT artist_id FROM tracks WHERE published=1) ORDER BY created_at DESC LIMIT 12'),
-    all(env, "SELECT genre,COUNT(*) c FROM tracks WHERE published=1 AND genre<>'' GROUP BY genre ORDER BY c DESC LIMIT 12"),
-    all(env, 'SELECT id,name FROM playlists WHERE public=1 ORDER BY created_at DESC LIMIT 12'),
   ]);
-  return json({ promoted, fresh, popular, recent, albums: albums.map(mapAlbum), artists: artists.map(mapArtist), genres: genres.map(g => g.genre), editorial });
+  return json({ ...shared, recent });
 });
 
 route('GET', '/api/search', async (req, env) => {
@@ -272,7 +290,7 @@ route('POST', '/api/play', async (req, env, { user }) => {
   const trackId = str((await body(req)).trackId, 40);
   const t = await first(env, 'SELECT id,duration FROM tracks WHERE id=? AND published=1', trackId);
   if (!t) fail(404, 'Qo\'shiq topilmadi');
-  const s = await settings(env);
+  const s = await liveSettings(env);
   const e = await entitlement(env, user, s);
   const every = Number(s.ad_every) || 0;
   if (!e.premium && every > 0 && user.plays_since_ad >= every) {
@@ -284,24 +302,25 @@ route('POST', '/api/play', async (req, env, { user }) => {
     await env.DB.batch(writes);
     return json({ ad: { viewId, duration, title: ad?.title ?? `${s.site_name} reklamasiz`, body: ad?.body ?? 'Tarif oling va musiqani reklamasiz, uzluksiz tinglang.', image: media(ad?.image_key), audio: media(ad?.audio_key), ctaLabel: ad?.cta_label ?? '', ctaUrl: ad?.cta_url ?? '', trackId: ad?.track_id ?? null } });
   }
-  const exp = now() + Math.ceil(t.duration) + 6 * 3600;
-  const playId = uid();
-  await env.DB.batch([
-    st(env, 'INSERT INTO plays (id,user_id,track_id,started_at) VALUES (?,?,?,?)', playId, user.id, t.id, now()),
-    st(env, 'UPDATE users SET plays_since_ad=plays_since_ad+1,last_seen=? WHERE id=?', now(), user.id),
-  ]);
+  const t0 = now(), exp = t0 + Math.ceil(t.duration) + 6 * 3600;
+  // Paying listeners cause no write here; a start is only stored once it counts, keeping D1 writes and size down.
+  if (!e.premium) await run(env, 'UPDATE users SET plays_since_ad=plays_since_ad+1,last_seen=? WHERE id=?', t0, user.id);
+  else if (t0 - user.last_seen > 300) await run(env, 'UPDATE users SET last_seen=? WHERE id=?', t0, user.id);
+  const playId = `${t.id}.${t0}.${await hmac(env.SIGNING_SECRET, `play.${t.id}.${user.id}.${t0}`)}`;
   return json({ playId, url: `/media/stream/${t.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, t.id, user.id, exp)}` });
 });
 
 // Spotify counts a stream after 30 s; shorter tracks count at half length.
 route('POST', '/api/plays/:id/counted', async (req, env, { user, params }) => {
-  const p = await first(env, 'SELECT p.*,t.duration FROM plays p JOIN tracks t ON t.id=p.track_id WHERE p.id=? AND p.user_id=?', params.id, user.id);
-  if (!p) fail(404, 'Topilmadi');
-  if (p.counted || now() - p.started_at < Math.min(30, p.duration / 2) - 2) return json({ counted: !!p.counted });
-  await env.DB.batch([
-    st(env, 'UPDATE plays SET counted=1 WHERE id=?', p.id),
-    st(env, 'UPDATE tracks SET play_count=play_count+1 WHERE id=?', p.track_id),
-  ]);
+  const [trackId, startedRaw, sig] = params.id.split('.');
+  const started = Number(startedRaw);
+  if (!sig || !safeEqual(sig, await hmac(env.SIGNING_SECRET, `play.${trackId}.${user.id}.${startedRaw}`))) fail(404, 'Topilmadi');
+  const t = await first(env, 'SELECT duration FROM tracks WHERE id=?', trackId);
+  if (!t) fail(404, 'Topilmadi');
+  if (now() - started < Math.min(30, t.duration / 2) - 2) return json({ counted: false });
+  // The signature is the row id, so a repeated report cannot count twice.
+  const r = await run(env, 'INSERT OR IGNORE INTO plays (id,user_id,track_id,started_at,counted) VALUES (?,?,?,?,1)', sig, user.id, trackId, started);
+  if (r.meta.changes) await run(env, 'UPDATE tracks SET play_count=play_count+1 WHERE id=?', trackId);
   return json({ counted: true });
 });
 
@@ -711,7 +730,20 @@ route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
 }, 'admin');
 
 // ---------- entry ----------
+// D1 has a hard 10 GB limit. Stats read 30 days of plays; all-time counts live on tracks.play_count.
+async function cleanup(env) {
+  const t = now();
+  const jobs = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t]];
+  for (const [table, col, before] of jobs) {
+    for (let i = 0; i < 20; i++) {
+      const r = await run(env, `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${col}<? LIMIT 20000)`, before);
+      if (r.meta.changes < 20000) break;
+    }
+  }
+}
+
 export default {
+  scheduled(event, env, ctx) { ctx.waitUntil(cleanup(env)); },
   async fetch(req, env) {
     const url = new URL(req.url);
     try {

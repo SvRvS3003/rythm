@@ -1,5 +1,5 @@
 // JavaScript, test/android.mjs, node + adb: drives the real APK against production. Reads .prod.vars, never prints it.
-// Needs a booted emulator with 1.0.0 installed and dist/SvRvS-Rythm-1.0.1.apk built. Publishes 1.0.1 as the live release.
+// Needs a booted emulator with 1.0.0 installed and dist/SvRvS-Rythm-1.0.2.apk built. Publishes 1.0.2 as the live release.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -40,6 +40,7 @@ await api('/api/auth/login', { method: 'POST', body: { email: login, password: p
 const before = await api('/api/admin/settings');
 try {
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: 0, plans_enabled: true } });
+  await wait(11000); // settings cache
   for (const [i, sec] of [[1, 70], [2, 14]]) {
     const f = join(OUT, `s${i}.wav`);
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=${300 + i * 100}:duration=${sec}:sample_rate=48000`, '-af', 'aformat=channel_layouts=stereo', '-c:a', 'pcm_s24le', f]);
@@ -48,6 +49,7 @@ try {
     await api('/api/admin/uploads/complete', { method: 'POST', body: { key: st.key, uploadId: st.uploadId, parts: [part] } });
     ids.push((await api('/api/admin/tracks', { method: 'POST', body: { key: st.key, title: `DroidSinov${i}`, artist: 'SinovIjrochi' } })).id);
   }
+  await wait(31000); // listeners' home cache
   adb('shell', 'am', 'force-stop', PKG); adb('shell', 'am', 'start', '-n', `${PKG}/.MainActivity`);
   await tap('Akkaunt yaratish');
   await find(byText("Ro'yxatdan o'tish"), 'register form');
@@ -87,7 +89,7 @@ try {
   assert.equal(now(), 'DroidSinov2'); ok('previous from system controls, off-screen');
 
   // Self-update without any store.
-  await api(`/api/admin/releases?versionCode=2&versionName=1.0.1&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.1.apk') });
+  await api(`/api/admin/releases?versionCode=3&versionName=1.0.2&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.2.apk') });
   adb('shell', 'appops', 'set', PKG, 'REQUEST_INSTALL_PACKAGES', 'allow');
   adb('shell', 'am', 'force-stop', PKG); adb('shell', 'am', 'start', '-n', `${PKG}/.MainActivity`);
   await find(byText('Yangilash'), 'update prompt', 60000);
@@ -97,9 +99,9 @@ try {
   shot('confirm');
   adb('shell', 'input', 'tap', String(inst.x), String(inst.y));
   let v = ''; const vEnd = Date.now() + 60000;
-  while (Date.now() < vEnd) { v = adb('shell', 'dumpsys', 'package', PKG); if (/versionCode=2/.test(v)) break; await wait(2000); }
-  assert.match(v, /versionCode=2/); ok('APK updated itself from 1.0.0 to 1.0.1');
-  assert.match(v, /versionName=1\.0\.1/);
+  while (Date.now() < vEnd) { v = adb('shell', 'dumpsys', 'package', PKG); if (/versionCode=3/.test(v)) break; await wait(2000); }
+  assert.match(v, /versionCode=3/); ok('APK updated itself from 1.0.1 to 1.0.2');
+  assert.match(v, /versionName=1\.0\.2/);
 } finally {
   for (const id of ids) await api(`/api/admin/tracks/${id}`, { method: 'DELETE' }).catch(() => {});
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: before.ad_every, plans_enabled: before.plans_enabled === '1' } }).catch(() => {});
