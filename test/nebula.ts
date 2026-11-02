@@ -18,16 +18,66 @@ await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.vi
 const size = await p.evaluate(() => { const c = document.querySelector<HTMLCanvasElement>('.nebula'); return [c.width, c.height, c.getBoundingClientRect().height]; });
 assert.ok(size[0] >= 195 && size[1] >= 422, `canvas not sized ${size}`);
 assert.equal(size[2], 844, 'backdrop must cover the screen');
-// Queue: picking a song must keep the whole list.
-await p.getByRole('button', { name: 'Navbat' }).click();
+// Queue sheet follows the drag, and speed or distance decide where it lands.
+const sheetTop = () => p.evaluate(() => document.querySelector('.q-sheet').getBoundingClientRect().top);
+const opened = () => p.evaluate(() => { const s = document.querySelector('.q-sheet'); const r = s.getBoundingClientRect(); return getComputedStyle(s).display !== 'none' && r.top < innerHeight - r.height * 0.95; });
+const VH = 844;
+await p.mouse.move(195, 700); await p.mouse.down();
+await p.mouse.move(195, 640, { steps: 4 }); const a = await sheetTop();
+await p.mouse.move(195, 560, { steps: 4 }); const c = await sheetTop();
+assert.ok(a < VH && c < a - 40, `sheet must follow the finger: ${a} -> ${c}`);
+assert.ok(Math.abs((a - c) - 80) < 12, `moves with the finger 1:1, got ${a - c}`);
+await p.mouse.move(195, 660, { steps: 8 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(600);
+assert.equal(await opened(), false, 'a short slow drag must fall back');
+await p.mouse.move(195, 760); await p.mouse.down(); await p.mouse.move(195, 300, { steps: 10 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(600);
+assert.equal(await opened(), true, 'a long drag must open');
 const rows = () => p.locator('.queue .tr').count();
 const before = await rows();
 assert.ok(before >= 2, `queue ${before}`);
 await p.locator('.queue .tr').nth(before - 1).click();
 await p.waitForTimeout(1500);
-assert.equal(await rows(), before, 'queue lost songs after choosing one');
+assert.ok(await rows() >= before, 'queue lost songs after choosing one');
+const ids = await p.evaluate(() => [...document.querySelectorAll<HTMLElement>('.queue .tr')].map(r => r.dataset.id));
+assert.equal(new Set(ids).size, ids.length, 'queue holds a song twice');
 assert.equal(await p.locator('.queue .tr.cur').count(), 1);
-console.log('  ok queue keeps', before, 'songs');
+assert.equal(await opened(), true, 'choosing a song keeps the sheet open');
+await p.mouse.move(195, 150); await p.mouse.down(); await p.mouse.move(195, 700, { steps: 10 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(600);
+assert.equal(await opened(), false, 'dragging down must close');
+await p.getByRole('button', { name: 'Navbat' }).click(); await p.waitForTimeout(600);
+assert.equal(await opened(), true, 'the button still opens it');
+await p.mouse.click(195, 70); await p.waitForTimeout(600);
+assert.equal(await opened(), false, 'tapping above the list closes it');
+await p.screenshot({ path: `${OUT}/queue-closed-${name}.png` });
+console.log('  ok queue sheet follows the drag, opens, closes, keeps', before, 'songs');
+// Down on the art shrinks the player away; down on the list only returns to the art.
+const nowTop = () => p.evaluate(() => document.querySelector('.now').getBoundingClientRect().top);
+const isOpen = () => p.evaluate(() => document.querySelector('.now').classList.contains('show'));
+await p.mouse.move(195, 120); await p.mouse.down(); await p.mouse.move(195, 220, { steps: 4 }); const t1 = await nowTop();
+await p.mouse.move(195, 320, { steps: 4 }); const t2 = await nowTop();
+assert.ok(t1 > 50 && t2 > t1 + 40, `player must follow the finger down: ${t1} -> ${t2}`);
+await p.mouse.move(195, 170, { steps: 8 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(500);
+assert.equal(await isOpen(), true, 'a short slow drag must spring back');
+assert.ok(Math.abs(await nowTop()) < 2, 'player must return to the top');
+await p.getByRole('button', { name: 'Navbat' }).click(); await p.waitForTimeout(500);
+await p.mouse.move(195, 150); await p.mouse.down(); await p.mouse.move(195, 700, { steps: 10 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(600);
+assert.equal(await opened(), false); assert.equal(await isOpen(), true, 'list down returns to the art, not closed');
+await p.mouse.move(195, 120); await p.mouse.down(); await p.mouse.move(195, 620, { steps: 10 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(700);
+assert.equal(await isOpen(), false, 'a long drag down must close the player');
+assert.equal(await p.locator('.player.show').count(), 1, 'music keeps its mini player');
+await p.locator('.player .info').click(); await p.waitForSelector('.now.show');
+console.log('  ok art down closes with the finger, list down returns to art');
+if (name === 'chromium') { // real touch events, which WebKit in Playwright cannot synthesise
+  const cdp = await p.context().newCDPSession(p);
+  const touch = (type: string, y?: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: y === undefined ? [] : [{ x: 195, y }] } as any);
+  await touch('touchStart', 760);
+  for (let y = 740; y >= 300; y -= 40) { await touch('touchMove', y); await p.waitForTimeout(25); }
+  await p.waitForTimeout(200);
+  await p.screenshot({ path: `${OUT}/queue-open-${name}.png` });
+  await touch('touchEnd'); await p.waitForTimeout(600);
+  assert.equal(await opened(), true, 'touch drag must open');
+  console.log('  ok touch swipe opens the sheet');
+  await p.mouse.click(195, 70); await p.waitForTimeout(500);
+}
 await p.getByRole('button', { name: 'Yopish' }).click();
 assert.deepEqual(errs, []);
 // Logo: moves with the music without jumps, and eases back to its exact resting shape after pause.
@@ -84,6 +134,30 @@ await fresh.close();
 await p.goto('http://127.0.0.1:8787/');
 await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
 await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+// Pressing a card must not redraw the page, which is what made its badge flicker.
+await p.setViewportSize({ width: 390, height: 844 });
+await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card'); await p.waitForTimeout(1500);
+await p.evaluate(() => { (document.querySelector('.view') as any).__same = true; });
+await p.locator('.shelf .card').first().click(); await p.waitForTimeout(2500);
+assert.equal(await p.evaluate(() => (document.querySelector('.view') as any).__same === true), true, 'home was redrawn by a tap');
+await p.locator('.player .playbtn').first().click();
+console.log('  ok tapping a song does not redraw the page');
+// Admin tabs: the current section stays in view, also after a reload, and so does the page position.
+await p.setViewportSize({ width: 390, height: 844 });
+await p.goto('http://127.0.0.1:8787/admin'); await p.waitForSelector('.anav');
+const tabVisible = () => p.evaluate(() => { const n = document.querySelector('.anav'), c = n.querySelector('.on').getBoundingClientRect(), r = n.getBoundingClientRect(); return c.left >= r.left - 1 && c.right <= r.right + 1; });
+for (const label of ['Reklama', 'Sozlamalar', 'Foydalanuvchilar']) {
+  await p.locator('.anav a', { hasText: label }).click(); await p.waitForFunction(l => document.querySelector('.anav .on')?.textContent === l, label); await p.waitForTimeout(150);
+  assert.equal(await tabVisible(), true, `${label} tab must stay in view`);
+}
+await p.locator('.anav a', { hasText: 'Sozlamalar' }).click(); await p.waitForSelector('input[placeholder="8600 0000 0000 0000"]');
+await p.evaluate(() => { document.querySelector('.main').scrollTop = 300; });
+const pos = await p.evaluate(() => document.querySelector('.main').scrollTop);
+await p.reload(); await p.waitForSelector('input[placeholder="8600 0000 0000 0000"]'); await p.waitForTimeout(300);
+assert.ok(p.url().endsWith('/admin/settings'), 'reload must stay on the page');
+assert.equal(await tabVisible(), true, 'current tab must be in view after reload');
+assert.ok(Math.abs(await p.evaluate(() => document.querySelector('.main').scrollTop) - pos) < 3, 'reload must keep the scroll position');
+console.log('  ok admin tabs stay in view; reload keeps page and position');
 // Tab bar: holding and sliding must not navigate until release.
 await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
 const box = async name => p.locator('.tabs a', { hasText: name }).boundingBox();

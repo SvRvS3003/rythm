@@ -270,12 +270,28 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 .logo-mark svg { display: block; width: 100%; height: 100%; }
 .home-mark { width: 34px; height: 34px; margin-right: -2px; }
 @media (min-width: 820px) { .home-mark { display: none; } }
-.new-tag { position: absolute; z-index: 2; top: 8px; left: 8px; }
+.new-tag { position: absolute; z-index: 2; top: 8px; left: 8px; transform: translateZ(0); pointer-events: none; }
 .card.spotlight { z-index: 3; }
 .card.spotlight .cover { animation: spot 5.2s cubic-bezier(.2, .7, .2, 1) both; }
 .card.spotlight .new-tag { animation: tagIn .7s cubic-bezier(.2, .9, .3, 1.2) .5s both; }
 @keyframes spot { 0% { transform: scale(1); box-shadow: 0 0 0 0 #ffb02e00; } 18% { transform: scale(1.07); box-shadow: 0 0 0 3px #ffb02e, 0 0 44px 10px #ff4d2e99; } 72% { transform: scale(1.07); box-shadow: 0 0 0 3px #ffb02e, 0 0 44px 10px #ff4d2e80; } 100% { transform: scale(1); box-shadow: 0 0 0 0 #ffb02e00; } }
 @keyframes tagIn { from { opacity: 0; transform: translateY(8px) scale(.8); } to { opacity: 1; transform: none; } }
+/* Queue sheet: everything is driven by --q, set per frame while dragging. */
+.now { overflow: hidden; overflow: clip; user-select: none; -webkit-user-select: none; }
+.now-in { overflow: hidden auto; overscroll-behavior: contain; scrollbar-width: none; }
+.now-in::-webkit-scrollbar { display: none; }
+.now { --q: 0; --d: 0; transform: translate3d(0, calc(var(--d) * 100%), 0) scale(calc(1 - var(--d) * .12)); border-radius: calc(var(--d) * 48px); transform-origin: 50% 100%; }
+.now.d-anim { transition: transform .3s cubic-bezier(.3, .7, .3, 1), border-radius .3s; }
+.now-in { opacity: calc(1 - var(--q) * .6); transform: scale(calc(1 - var(--q) * .05)); transform-origin: 50% 20%; }
+.q-sheet { position: fixed; z-index: 5; left: 0; right: 0; bottom: 0; margin: 0 auto; width: min(640px, 100%); height: min(82dvh, 760px); display: none; flex-direction: column; border-radius: 24px 24px 0 0; background: #17141cf2; border: 1px solid #ffffff24; border-bottom: 0; box-shadow: 0 -18px 50px #0000008c; transform: translate3d(0, calc((1 - var(--q)) * 100%), 0); will-change: transform; padding-bottom: var(--sab); }
+.now.q-shown .q-sheet { display: flex; }
+.now.q-anim .q-sheet, .now.q-anim .now-in { transition: transform .4s cubic-bezier(.22, .9, .3, 1), opacity .4s; }
+.q-grab { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0 12px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.q-grab i { width: 40px; height: 5px; border-radius: 5px; background: #ffffff4d; }
+.q-sheet .queue { flex: 1; max-height: none; padding: 0 12px 12px; }
+.q-hint { color: var(--t3); transform: rotate(180deg); animation: hintUp 2.2s ease-in-out infinite; }
+@keyframes hintUp { 0%, 100% { transform: rotate(180deg) translateY(0); } 50% { transform: rotate(180deg) translateY(4px); } }
+html.ios .q-sheet { background: linear-gradient(135deg, #2a2632d9, #15131bd9); -webkit-backdrop-filter: blur(26px) saturate(190%); backdrop-filter: blur(26px) saturate(190%); box-shadow: inset 0 1px 0 #ffffff59, 0 -18px 50px #0000008c; }
 /* motion */
 .view.quiet > * { animation: none; }
 @keyframes eq { from { height: 25%; } to { height: 100%; } }
@@ -290,7 +306,9 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 .scrim, .ad { animation: fade .2s ease; }
 .card .cover { transition: transform .2s cubic-bezier(.2, .7, .2, 1); }
 @media (hover: hover) { .card:hover .cover { transform: scale(1.03); } }
-.card:active .cover, .btn:active, .pill:active, .ib:active, .playbtn:active { transform: scale(.95); }
+.card { transition: transform .12s; isolation: isolate; }
+.card:active { transform: scale(.97); }
+.btn:active, .pill:active, .ib:active, .playbtn:active { transform: scale(.95); }
 .btn, .pill, .ib, .playbtn { transition: transform .12s, background .15s; }
 .now .art-wrap { transition: transform .35s cubic-bezier(.2, .7, .2, 1); transform: scale(.94); }
 html.playing .now .art-wrap { transform: none; }

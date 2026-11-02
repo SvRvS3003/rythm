@@ -120,7 +120,7 @@ export const fmt = (s: number): string => { s = Math.max(0, Math.floor(s || 0));
 export const money = (n: number): string => `${Number(n).toLocaleString('ru-RU').replace(/ /g, ' ')} so'm`;
 const hue = (t: string): number => [...String(t)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
 export function cover(src: string | null | undefined, label: string, cls = ''): HTMLElement {
-  if (src) return h('img', { class: `cover ${cls}`, src, alt: '', loading: 'lazy', decoding: 'async' });
+  if (src) return h('img', { class: `cover ${cls}`, src, alt: '', loading: 'lazy' });
   const d = hue(label);
   const el = h('div', { class: `cover fallback ${cls}`, 'aria-hidden': 'true' }, String(label || '?').trim().charAt(0).toUpperCase());
   el.style.background = `linear-gradient(135deg, hsl(${d} 65% 42%), hsl(${(d + 50) % 360} 70% 24%))`;
@@ -478,6 +478,91 @@ function wakeLogo(): void {
   logoLast = performance.now();
   logoRaf = requestAnimationFrame(logoFrame);
 }
+// Queue sheet: --q runs 0 to 1 and every moving part reads it, so the picture follows the finger exactly.
+const queueList = h('div', { class: 'list queue' });
+const queueSheet = h('div', { class: 'q-sheet', role: 'dialog', 'aria-label': 'Navbat' }, h('div', { class: 'q-grab' }, h('i'), h('h3', null, 'Navbat')), queueList);
+const sheetState = { open: false, p: 0 };
+let queueDrawn = '';
+function renderQueue(): void {
+  const sig = P.queue.map(q => q.id).join();
+  if (sig !== queueDrawn) {
+    queueDrawn = sig;
+    queueList.replaceChildren(...P.queue.map((q, n) => h('button', { class: 'tr', 'data-id': q.id, 'data-n': n, style: 'margin:0;width:100%', onclick: () => loadAt(n) }, cover(q.cover, q.title), h('div', { class: 'grow', style: 'text-align:left' }, h('div', { class: 'clip t' }, q.title), h('div', { class: 'clip s' }, q.artist)))));
+  }
+  for (const b of queueList.querySelectorAll<HTMLElement>('.tr')) {
+    const cur = Number(b.dataset.n) === P.i;
+    b.classList.toggle('cur', cur);
+    if (cur) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
+  }
+}
+function paintSheet(p: number, animate: boolean): void {
+  sheetState.p = p;
+  if (!ui.now) return;
+  ui.now.classList.toggle('q-anim', animate);
+  ui.now.classList.toggle('q-shown', p > 0 || sheetState.open);
+  ui.now.style.setProperty('--q', p.toFixed(4));
+}
+function setQueue(open: boolean, animate = true): void {
+  const was = sheetState.open;
+  sheetState.open = open;
+  paintSheet(open ? 1 : 0, animate);
+  if (open && !was) { renderQueue(); queueList.querySelector('.cur')?.scrollIntoView({ block: 'center' }); }
+  for (const b of ui.now?.querySelectorAll('button[aria-label="Navbat"]') || []) b.classList.toggle('on', open);
+  if (!open) setTimeout(() => { if (!sheetState.open && sheetState.p === 0) ui.now?.classList.remove('q-shown'); }, animate ? 420 : 0);
+}
+function attachSwipe(now: HTMLElement): void {
+  let d: { x0: number; y0: number; p0: number; on: boolean; inList: boolean; y: number; t: number; v: number; dismiss: boolean } | null = null;
+  let swallowClick = 0;
+  const begin = (x: number, y: number, target: EventTarget | null) => {
+    const el = target as Element;
+    d = el.closest?.('input[type=range]') || P.ad ? null : { x0: x, y0: y, p0: sheetState.p, on: false, inList: !!el.closest?.('.queue'), y, t: performance.now(), v: 0, dismiss: false };
+  };
+  const move = (x: number, y: number, e: Event) => {
+    if (!d) return;
+    const dy = y - d.y0;
+    if (!d.on) {
+      if (Math.abs(dy) < 8 || Math.abs(x - d.x0) > Math.abs(dy)) return;
+      // Art showing: up opens the list, down shrinks the player away. List showing: down returns to the art; a scrolled list keeps its scroll.
+      if (d.p0 === 0 ? dy > 0 && (now.querySelector('.now-in')?.scrollTop || 0) > 0 : dy < 0 || (d.inList && queueList.scrollTop > 0)) { d = null; return; }
+      d.on = true;
+      d.dismiss = d.p0 === 0 && dy > 0;
+      now.classList.remove('d-anim');
+      if (!d.dismiss) ui.now?.classList.add('q-shown');
+    }
+    if (e.cancelable) e.preventDefault();
+    const t = performance.now();
+    d.v = (y - d.y) / Math.max(1, t - d.t);
+    d.y = y; d.t = t;
+    if (d.dismiss) now.style.setProperty('--d', Math.max(0, dy / innerHeight).toFixed(4));
+    else paintSheet(Math.min(1, Math.max(0, d.p0 - dy / queueSheet.offsetHeight)), false);
+  };
+  const end = () => {
+    const g = d;
+    d = null;
+    if (!g?.on) return;
+    swallowClick = performance.now();
+    // A flick decides by speed, a slow drag by how far it went.
+    if (g.dismiss) {
+      if (g.v > 0.35 || Number(now.style.getPropertyValue('--d')) > 0.28) dismissNow();
+      else { now.classList.add('d-anim'); now.style.setProperty('--d', '0'); }
+      return;
+    }
+    setQueue(g.v < -0.35 ? true : g.v > 0.35 ? false : sheetState.p > 0.4);
+  };
+  now.addEventListener('touchstart', e => begin(e.touches[0].clientX, e.touches[0].clientY, e.target), { passive: true });
+  now.addEventListener('touchmove', e => move(e.touches[0].clientX, e.touches[0].clientY, e), { passive: false });
+  now.addEventListener('touchend', end);
+  now.addEventListener('touchcancel', () => { const was = sheetState.open; d = null; setQueue(was); now.classList.add('d-anim'); now.style.setProperty('--d', '0'); });
+  now.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' && e.button === 0) begin(e.clientX, e.clientY, e.target); });
+  addEventListener('pointermove', e => { if (e.pointerType === 'mouse') move(e.clientX, e.clientY, e); });
+  addEventListener('pointerup', e => { if (e.pointerType === 'mouse') end(); });
+  addEventListener('pointercancel', e => { if (e.pointerType === 'mouse') end(); });
+  now.addEventListener('dragstart', e => e.preventDefault()); // a browser image-drag would swallow the swipe and leave the sheet half open
+  now.addEventListener('click', e => {
+    if (performance.now() - swallowClick < 350) { e.stopPropagation(); e.preventDefault(); return; }
+    if (sheetState.open && !(e.target as Element).closest('.q-sheet') && !(e.target as Element).closest('button[aria-label="Navbat"]') && !(e.target as Element).closest('button[aria-label="Yopish"]')) { e.stopPropagation(); e.preventDefault(); setQueue(false); }
+  }, true);
+}
 const nebulaCanvas = h('canvas', { class: 'nebula', 'aria-hidden': 'true' });
 let stopNebula: (() => void) | null = null;
 function openNow() {
@@ -487,7 +572,16 @@ function openNow() {
   import('./nebula.ts').then(m => { if (ui.now?.classList.contains('show') && !stopNebula) stopNebula = m.startNebula(nebulaCanvas, () => !audio.paused, readRhythm); }).catch(() => {});
   loadRhythm();
 }
+// Slides away instead of vanishing; the mini player underneath takes over.
+function dismissNow(): void {
+  const now = ui.now;
+  if (!now) return;
+  now.classList.add('d-anim');
+  now.style.setProperty('--d', '1');
+  setTimeout(() => { closeNow(); now.classList.remove('d-anim'); now.style.setProperty('--d', '0'); }, 300);
+}
 function closeNow() {
+  setQueue(false, false);
   ui.now?.classList.remove('show');
   stopNebula?.();
   stopNebula = null;
@@ -499,11 +593,12 @@ function renderNow(mode?: string): void {
   const m = ui.nowMode || 'art';
   ui.now.style.setProperty('--art', t.cover ? `url("${t.cover}")` : 'none');
   const left = m === 'lyrics' ? h('div', { class: 'lyrics', id: 'lyr' }, 'Yuklanmoqda…')
-    : m === 'queue' ? h('div', { class: 'list queue' }, P.queue.map((q, n) => h('button', { class: `tr ${n === P.i ? 'cur' : ''}`, 'data-id': q.id, style: 'margin:0;width:100%', onclick: () => loadAt(n), 'aria-current': n === P.i ? 'true' : null }, cover(q.cover, q.title), h('div', { class: 'grow', style: 'text-align:left' }, h('div', { class: 'clip t' }, q.title), h('div', { class: 'clip s' }, q.artist)))))
     : h('div', { class: 'art-wrap' }, cover(t.cover, t.title, 'art'));
-  ui.now.replaceChildren(nebulaCanvas, h('div', { class: 'now-in' },
+  const listTop = queueList.scrollTop;
+  renderQueue();
+  ui.now.replaceChildren(queueSheet, nebulaCanvas, h('div', { class: 'now-in' },
     h('div', { class: 'top' },
-      iconBtn('down', 'Yopish', closeNow),
+      iconBtn('down', 'Yopish', dismissNow),
       h('div', { class: 'small muted clip', style: 'font-weight:700' }, t.album || 'Hozir ijro etilmoqda'),
       iconBtn('plus', 'Pleylistga qo\'shish', () => addToPlaylist(t))),
     left,
@@ -521,9 +616,10 @@ function renderNow(mode?: string): void {
         iconBtn(repeatIcon(), REPEAT_LABEL[P.repeat], cycleRepeat, P.repeat !== 'off' ? 'on' : '')),
       h('div', { class: 'row between' },
         iconBtn('text', 'Qo\'shiq matni', () => renderNow(m === 'lyrics' ? 'art' : 'lyrics'), m === 'lyrics' ? 'on' : ''),
-        iconBtn('queue', 'Navbat', () => renderNow(m === 'queue' ? 'art' : 'queue'), m === 'queue' ? 'on' : '')))));
+        h('div', { class: 'q-hint', 'aria-hidden': 'true' }, icon('down', 20)),
+        iconBtn('queue', 'Navbat', () => setQueue(!sheetState.open), sheetState.open ? 'on' : '')))));
   if (m === 'lyrics') api(`/api/tracks/${t.id}`).then(d => { const l = document.getElementById('lyr'); if (l) l.textContent = d.lyrics || 'Bu qo\'shiq uchun matn hali kiritilmagan.'; }).catch(() => {});
-  if (m === 'queue') ui.now.querySelector('.queue .cur')?.scrollIntoView({ block: 'center' });
+  queueList.scrollTop = listTop;
   paintTime();
 }
 
@@ -875,7 +971,7 @@ function render() {
   }
   mainEl = h('main', { class: 'main' });
   sideLists = h('div', { class: 'lists' });
-  ui.now = ui.now || h('div', { class: 'now', role: 'dialog', 'aria-label': 'Hozir ijro etilmoqda' });
+  if (!ui.now) { ui.now = h('div', { class: 'now', role: 'dialog', 'aria-label': 'Hozir ijro etilmoqda' }); attachSwipe(ui.now); }
   const navLinks = (extra: [string, string, string][]) => [...NAV, ...extra].map(([href, ic, label]) => h('a', { href, 'data-nav': href }, icon(ic, 22), h('span', { class: 'clip' }, label)));
   const adminNav: [string, string, string][] = S.user!.role === 'admin' ? [['/admin', 'admin', 'Admin']] : [];
   root.replaceChildren(h('div', { class: 'shell' },
@@ -936,6 +1032,16 @@ function dragTabs(tabs: HTMLElement): HTMLElement {
   tabs.addEventListener('contextmenu', e => e.preventDefault());
   return tabs;
 }
+// A reload returns to the same spot on the same page. This is a convenience, so storage failures are ignored.
+function takeSavedScroll(): number {
+  try {
+    const raw = sessionStorage.getItem('scroll');
+    sessionStorage.removeItem('scroll');
+    const s = raw ? JSON.parse(raw) as { path: string; top: number } : null;
+    return s && s.path === location.pathname + location.search ? s.top : 0;
+  } catch { return 0; }
+}
+addEventListener('pagehide', () => { try { if (mainEl) sessionStorage.setItem('scroll', JSON.stringify({ path: location.pathname + location.search, top: mainEl.scrollTop })); } catch { /* private mode */ } });
 let routeSeq = 0;
 async function route(quiet = false): Promise<void> {
   if (!mainEl) { if (S.user || location.pathname === '/install') render(); return; }
@@ -961,7 +1067,10 @@ async function route(quiet = false): Promise<void> {
   if (seq !== routeSeq) return;
   const top = mainEl.scrollTop;
   mainEl.replaceChildren(view);
-  mainEl.scrollTop = quiet ? top : 0;
+  mainEl.scrollTop = quiet ? top : takeSavedScroll();
+  // Section tabs are rebuilt on every page: bring the current one into view so the next tab is one tap away.
+  const tabs = view.querySelector<HTMLElement>('.anav'), cur = tabs?.querySelector<HTMLElement>('.on');
+  if (tabs && cur) tabs.scrollLeft = cur.offsetLeft - tabs.offsetLeft - (tabs.clientWidth - cur.offsetWidth) / 2;
 }
 export const refresh = (): Promise<void> => route();
 
