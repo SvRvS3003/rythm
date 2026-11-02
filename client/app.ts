@@ -288,9 +288,10 @@ audio.addEventListener('timeupdate', () => {
   }
   prepareNext();
   paintTime();
+  lockFrame();
 });
 audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); });
-audio.addEventListener('pause', () => { syncPlayer(); wakeLogo(); });
+audio.addEventListener('pause', () => { syncPlayer(); wakeLogo(); lockFrame(true); });
 audio.addEventListener('error', () => {
   if (P.ad || !P.track || audio.src === SILENT) return;
   // Usually an expired link after a long pause: fetch a fresh one once and resume in place.
@@ -418,7 +419,7 @@ const beat: { id: string | null; data: Uint8Array | null } = { id: null, data: n
 function loadRhythm(): void {
   const t = P.track;
   if (!t || beat.id === t.id) return;
-  beat.id = t.id; beat.data = null;
+  beat.id = t.id; beat.data = null; lockFrameNo = -1;
   if (!t.rhythm) return;
   fetch(t.rhythm).then(r => (r.ok ? r.arrayBuffer() : null)).then(b => { if (b && beat.id === t.id) beat.data = new Uint8Array(b); }).catch(() => {});
 }
@@ -472,6 +473,41 @@ function logoFrame(now: number): void {
     [...g.children].forEach((r, i) => { r.setAttribute('height', logoH[i].toFixed(1)); r.setAttribute('y', (256 - logoH[i] / 2).toFixed(1)); });
   }
   logoRaf = moving ? requestAnimationFrame(logoFrame) : 0;
+}
+// Lock screen: the OS only takes still pictures, so the logo is redrawn from the beat map on each playback tick, about 4 times a second.
+// Songs with their own cover keep it. shortcut: frame swapping, a truly smooth animated cover needs a native app.
+const lockCanvas = document.createElement('canvas');
+lockCanvas.width = lockCanvas.height = 256;
+const lockH = LOGO_REST.slice();
+let lockLast = 0, lockFrameNo = -1;
+function lockFrame(force = false): void {
+  const t = P.track, now = performance.now();
+  if (!t || t.cover || P.ad || !document.hidden || !('mediaSession' in navigator) || (!force && now - lockLast < 240) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  lockLast = now;
+  const c = lockCanvas.getContext('2d');
+  if (!c) return;
+  // The map has 20 frames a second and this draws about 4, so each bar takes the loudest moment since the last picture: no hit is skipped.
+  const d = audio.paused ? null : beat.data, end = Math.floor(audio.currentTime * FPS);
+  const goal = d ? LOGO_REST.map((_, i) => {
+    let peak = 0;
+    for (let f = Math.max(lockFrameNo + 1, end - 8); f <= end; f++) { const at = f * BANDS + LOGO_BANDS[i]; if (at < d.length) peak = Math.max(peak, d[at]); }
+    return 56 + 380 * (peak / 255);
+  }) : logoTargets(now / 1000);
+  lockFrameNo = end;
+  c.fillStyle = '#0b0a0d';
+  c.fillRect(0, 0, 256, 256);
+  const g = c.createLinearGradient(0, 0, 256, 256);
+  g.addColorStop(0, '#ff4d2e'); g.addColorStop(1, '#ffb02e');
+  c.fillStyle = g;
+  goal.forEach((v, i) => {
+    lockH[i] += (v - lockH[i]) * (v > lockH[i] ? 1 : 0.6); // hits land at once, the fall stays soft
+    const h = lockH[i] / 2;
+    c.beginPath();
+    c.roundRect((96 + i * 74) / 2, 128 - h / 2, 22, h, 11);
+    c.fill();
+  });
+  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: [{ src: lockCanvas.toDataURL('image/png'), sizes: '256x256', type: 'image/png' }] });
+  syncPosition();
 }
 function wakeLogo(): void {
   if (logoRaf || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
