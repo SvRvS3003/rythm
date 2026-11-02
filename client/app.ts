@@ -1,3 +1,4 @@
+import * as offline from './offline.ts';
 import { unseen } from './queue.ts';
 import { BANDS, FPS } from './rhythm.ts';
 // TypeScript, client/app.ts, browser / Android WebView / iOS standalone: the listener app.
@@ -40,6 +41,7 @@ const I: Record<string, string> = {
   next: 'M5 5l11 7-11 7zM19 5v14', prev: 'M19 5L8 12l11 7zM5 5v14',
   shuffle: 'M3 7h3.5c2 0 3.2 1 4.3 2.7l2.4 4.6C14.3 16 15.5 17 17.500 17H21M18 14l3 3-3 3M3 17h3.500c1.600 0 2.600-.6 3.500-1.700M13.500 8.700C14.400 7.600 15.500 7 17.500 7H21M18 4l3 3-3 3',
   repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
+  save: 'M12 3v12M7 10l5 5 5-5M4 20h16',
   repeat1: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3M11 10.500l1.500-1v5',
   heart: 'M12 20.500S3.500 15.500 3.500 9A4.500 4.500 0 0 1 12 7a4.500 4.500 0 0 1 8.500 2c0 6.500-8.500 11.500-8.500 11.500z', plus: 'M12 5v14M5 12h14', down: 'M6 9l6 6 6-6', x: 'M6 6l12 12M18 6L6 18',
   vol: 'M4 9.500v5h3.500L12 18.500v-13L7.500 9.500zM16 9a4 4 0 0 1 0 6M18.500 6.500a8 8 0 0 1 0 11', text: 'M4 6h16M4 12h16M4 18h10', queue: 'M4 6h12M4 12h12M4 18h7M20 6v10.500a2.500 2.500 0 1 1-2-2.450', trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14',
@@ -55,7 +57,7 @@ export const icon = (name: string, size = 22): SVGSVGElement => {
 // Temporary page data: a page opens at once from here, refreshes behind the scenes, and a newer answer replaces the old one.
 const store = new Map<string, { json: string; at: number }>();
 const FRESH_MS = 15000;
-const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users)/; // live or one-off answers
+const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users|offline)/; // live or one-off answers
 const KEEP = ['/api/me', '/api/home', '/api/library', '/api/plans']; // also survive closing the app, so it opens instantly
 const NO_INVALIDATE = /^\/api\/(play$|plays\/|ads\/|me\/seen)/; // frequent writes that change no page
 const pending = new Map<string, Promise<unknown>>();
@@ -71,10 +73,14 @@ async function request<T>(path: string, method: string, body?: unknown, raw?: Bo
   if (!res.ok) throw new Error(data.error || "Tarmoq xatosi. Internetni tekshiring.");
   return data;
 }
+// An answer requested before a change describes the old world and must not overwrite the new one.
+let writes = 0;
 function loadPage(path: string): Promise<unknown> {
   const running = pending.get(path);
   if (running) return running;
+  const startedAt = writes;
   const p = request<unknown>(path, 'GET').then(data => {
+    if (startedAt !== writes) return data;
     const json = JSON.stringify(data), before = store.get(path);
     store.set(path, { json, at: Date.now() });
     if (KEEP.includes(path)) try { localStorage.setItem(`page:${path}`, json); } catch { /* storage full: memory still works */ }
@@ -87,8 +93,8 @@ function loadPage(path: string): Promise<unknown> {
 export async function api<T = any>(path: string, { method = 'GET', body, raw }: { method?: string; body?: unknown; raw?: BodyInit } = {}): Promise<T> {
   if (method !== 'GET') {
     const data = await request<T>(path, method, body, raw);
-    if (path.startsWith('/api/auth')) dropPages(true);
-    else if (!NO_INVALIDATE.test(path)) dropPages(false);
+    if (path.startsWith('/api/auth')) { writes++; pending.clear(); dropPages(true); }
+    else if (!NO_INVALIDATE.test(path)) { writes++; pending.clear(); dropPages(false); }
     return data;
   }
   if (NEVER.test(path)) return request<T>(path, 'GET');
@@ -114,7 +120,8 @@ function loadAllPages(): void {
   if (S.user.role === 'admin') list.push('/api/admin/stats', '/api/admin/tracks');
   for (const p of list) if (Date.now() - (store.get(p)?.at || 0) > FRESH_MS) loadPage(p).catch(() => {});
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadAllPages(); });
+// The offline licence is never read from page memory: only a fresh answer from the account may open or close it.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadAllPages(); if (navigator.onLine) refreshOffline(); } });
 
 export const fmt = (s: number): string => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 export const money = (n: number): string => `${Number(n).toLocaleString('ru-RU').replace(/ /g, ' ')} so'm`;
@@ -169,8 +176,8 @@ function savedRepeat(): 'off' | 'all' | 'one' {
 }
 const P: {
   queue: Track[]; i: number; track: Track | null; shuffle: boolean; repeat: 'off' | 'all' | 'one'; playId: string | null; heard: number; last: number; counted: boolean; token: number;
-  ad: { finish: () => void; tick: () => void } | null; retried: boolean; next: { i: number; grant: Row } | null; pick: number | null; preparing: boolean; speed: number; afterAd: Row | null; resume: number | null;
-} = { queue: [], i: -1, track: null, shuffle: false, repeat: savedRepeat(), playId: null, heard: 0, last: 0, counted: false, token: 0, ad: null, retried: false, next: null, pick: null, preparing: false, speed: 0, afterAd: null, resume: null };
+  ad: { finish: () => void; tick: () => void } | null; retried: boolean; next: { i: number; grant: Row } | null; pick: number | null; preparing: boolean; speed: number; afterAd: Row | null; resume: number | null; offlineOnly: boolean;
+} = { queue: [], i: -1, track: null, shuffle: false, repeat: savedRepeat(), playId: null, heard: 0, last: 0, counted: false, token: 0, ad: null, retried: false, next: null, pick: null, preparing: false, speed: 0, afterAd: null, resume: null, offlineOnly: false };
 const ui: { player?: HTMLElement; thin?: HTMLElement; now?: HTMLElement; miniPlay?: HTMLElement; barPlay?: HTMLElement; sh?: HTMLElement; rp?: HTMLElement; nowMode?: string } = {};
 
 // iOS only lets an element keep playing after async work if it has played inside a gesture once.
@@ -212,13 +219,14 @@ if (nav.audioSession) nav.audioSession.type = 'playback';
 
 // Off means this song plays once and stops; shuffle or repeat-all move on by themselves.
 const autoAdvances = (): boolean => P.repeat === 'all' || (P.repeat === 'off' && P.shuffle);
-const requestPlay = (id: string) => api('/api/play', { method: 'POST', body: { trackId: id, hidden: document.hidden } });
+const localGrant = (id: string): Row => ({ url: `/off/${id}`, playId: null });
+const requestPlay = (id: string): Promise<Row> => offline.ready.has(id) ? Promise.resolve(localGrant(id)) : api('/api/play', { method: 'POST', body: { trackId: id, hidden: document.hidden } });
 const wavBytes = (t: Track): number => t.duration * t.sampleRate * t.channels * t.bitDepth / 8;
 
-export function playList(list: Track[], index = 0): void {
+export function playList(list: Track[], index = 0, offlineOnly = false): void {
   if (!list?.length) return;
   P.queue = list.slice();
-  P.next = null; P.pick = null;
+  P.next = null; P.pick = null; P.offlineOnly = offlineOnly;
   loadAt(index);
 }
 // No await in here: iOS may freeze a backgrounded page during any network wait once audio has stopped.
@@ -262,8 +270,11 @@ async function pickNext(): Promise<number> {
     return (P.pick = n);
   }
   if (P.i + 1 >= P.queue.length) {
-    const d = await api('/api/home');
-    P.queue.push(...unseen(P.queue, [...d.fresh, ...d.popular]));
+    // An offline list loops on itself; it must never wander to songs that are not saved.
+    if (!P.offlineOnly && navigator.onLine) {
+      const d = await api('/api/home').catch(() => null);
+      if (d) P.queue.push(...unseen(P.queue, [...d.fresh, ...d.popular]));
+    }
   }
   return (P.pick = P.i + 1 < P.queue.length ? P.i + 1 : 0);
 }
@@ -836,6 +847,7 @@ function addToPlaylist(t: Track): void {
   sheet(close => {
     const name = h('input', { placeholder: 'Yangi pleylist nomi', 'aria-label': 'Yangi pleylist nomi' });
     return [h('h2', null, 'Pleylistga qo\'shish'), h('p', { class: 'muted small clip' }, t.title),
+      h('button', { class: 'btn full light', onclick: () => saveOffline(t, close) }, offline.ready.has(t.id) ? 'Oflayn saqlangan' : 'Oflayn saqlash'),
       S.playlists.map((p: Row) => h('button', { class: 'btn full', onclick: guard(async () => { await api(`/api/playlists/${p.id}/tracks`, { method: 'POST', body: { trackId: t.id } }); close(); toast(`"${p.name}" ga qo'shildi`); }) }, h('span', { class: 'clip' }, p.name))),
       h('form', { class: 'row', onsubmit: guard(async (e: Event) => {
         e.preventDefault();
@@ -912,6 +924,7 @@ const V: Record<string, View> = {
     el.append(h('div', { class: 'top' }, h('h1', null, 'Kutubxona'),
       h('button', { class: 'btn sm', onclick: () => newPlaylist() }, icon('plus', 16), 'Pleylist')),
       h('div', { class: 'grid' },
+        h('a', { class: 'card', href: '/offline' }, (() => { const c = h('div', { class: 'cover fallback' }, icon('save', 44)); c.style.background = 'linear-gradient(135deg, #2e8bff, #7a3cff)'; return c; })(), h('div', { class: 't' }, 'Oflayn'), h('div', { class: 's' }, 'Internetsiz tinglash')),
         h('a', { class: 'card', href: '/liked' }, (() => { const c = h('div', { class: 'cover fallback' }, icon('heart', 44)); c.style.background = 'var(--grad)'; return c; })(), h('div', { class: 't' }, 'Yoqtirganlarim'), h('div', { class: 's' }, `${S.liked.size} ta qo'shiq`)),
         S.playlists.map((p: Row) => h('a', { class: 'card', href: `/playlist/${p.id}` }, cover(null, p.name), h('div', { class: 't clip' }, p.name), h('div', { class: 's' }, `${p.count} ta qo'shiq`)))));
   },
@@ -984,7 +997,7 @@ const V: Record<string, View> = {
         h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
         u.role === 'admin' ? h('a', { class: 'btn pri', href: '/admin' }, 'Admin panel') : null,
         S.settings.supportUrl ? h('a', { class: 'btn', href: S.settings.supportUrl, target: '_blank', rel: 'noopener' }, 'Yordam') : null,
-        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); try { localStorage.removeItem('listening'); } catch { /* private mode */ } audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))]));
+        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); offline.wipeDevice(); try { localStorage.removeItem('listening'); } catch { /* private mode */ } audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))]));
   },
   async install(el) {
     const ua = navigator.userAgent, iOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), android = /Android/.test(ua);
@@ -1000,6 +1013,52 @@ const V: Record<string, View> = {
     el.append(h('h1', null, 'Ilovani o\'rnatish'), h('div', { class: 'two' }, android ? [apk, ios] : [ios, apk]), S.user ? '' : h('a', { class: 'btn', href: '/' }, 'Kirish sahifasiga qaytish'));
   },
 };
+const refreshOffline = async (): Promise<void> => { if (S.user) await offline.syncLicense(S.user.id, await api('/api/offline')).catch(() => {}); };
+function saveOffline(t: Track, close: () => void): void {
+  close();
+  guard(async () => {
+    await api('/api/offline', { method: 'POST', body: { trackId: t.id } });
+    toast('Qo\'shiq saqlanmoqda…');
+    await refreshOffline();
+    await offline.download(t, async () => (await api(`/api/offline/${t.id}/url`)).url);
+    toast(`"${t.title}" oflayn tayyor`);
+  })();
+}
+V.offline = async el => {
+  const online = navigator.onLine;
+  let state: Row | null = online ? await api('/api/offline').catch(() => null) : null;
+  if (state && S.user) await offline.syncLicense(S.user.id, state as never).catch(() => {});
+  const lic = await offline.refreshReady();
+  const local = await offline.localSongs();
+  if (!state) state = { limit: lic?.limit ?? 0, items: local.map(s => ({ ...s.track, allowed: offline.ready.has(s.id) })) };
+  const items = state.items as (Track & { allowed: boolean })[];
+  const has = new Map(local.map(s => [s.id, s]));
+  const limitText = state.limit === -1 ? `${items.length} ta qo'shiq` : `${items.length} / ${state.limit} ta qo'shiq`;
+  const playable = () => items.filter(t => offline.ready.has(t.id));
+  el.append(h('div', { class: 'stack' }, h('h1', null, 'Oflayn'), h('p', { class: 'muted' }, state.limit === 0 && !items.length ? 'Bu imkoniyat Boyvacha va Karanda tariflarida bor.' : limitText)));
+  if (state.limit === 0 || (items.length && !items.some(t => t.allowed))) el.append(h('div', { class: 'upsell' }, h('div', { class: 'grow' }, h('h3', null, 'Oflayn yopiq'), h('p', { class: 'small muted' }, items.length ? 'Saqlangan qo\'shiqlaringiz turibdi, tarif olsangiz darhol ochiladi.' : 'Tarif oling va internetsiz tinglang.')), online ? h('a', { class: 'btn pri sm', href: '/premium' }, 'Tarif olish') : null));
+  if (!online) el.append(h('span', { class: 'tag' }, 'Internet yo\'q'));
+  if (playable().length) el.append(h('div', null, h('button', { class: 'btn pri', onclick: () => playList(playable(), 0, true) }, icon('play', 18), 'Tinglash')));
+  if (!items.length && state.limit !== 0) el.append(empty('Hali saqlangan qo\'shiq yo\'q. Qo\'shiq yonidagi + tugmasidan "Oflayn saqlash"ni tanlang.'));
+  const move = (i: number, dir: number) => guard(async () => {
+    const ids = items.map(t => t.id), j = i + dir;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await api('/api/offline/order', { method: 'PUT', body: { ids } });
+    route(true);
+  });
+  el.append(h('section', { class: 'list offline-list' }, items.map((t, i) => {
+    const rec = has.get(t.id), open = offline.ready.has(t.id), busy = offline.active.get(t.id);
+    const status = busy !== undefined ? `Yuklanmoqda ${Math.round(busy * 100)}%` : open ? 'Oflayn tayyor' : !t.allowed ? 'Limitdan tashqari' : rec?.done ? 'Yopiq' : rec ? `To'xtagan ${Math.round((rec.have * 1048576 / rec.size) * 100)}%` : 'Yuklanmagan';
+    return h('div', { class: `tr ${P.track?.id === t.id ? 'cur' : ''}`, 'data-id': t.id },
+      h('button', { class: 'hit', disabled: !open, onclick: () => playList(playable(), playable().findIndex(x => x.id === t.id), true) }, cover(t.cover, t.title),
+        h('div', { class: 'grow' }, h('div', { class: 'clip t' }, t.title), h('div', { class: 'clip s' }, status))),
+      !open && t.allowed && online && busy === undefined ? h('button', { class: 'btn sm', onclick: guard(async () => { await offline.download(t, async () => (await api(`/api/offline/${t.id}/url`)).url); }) }, 'Yuklash') : null,
+      online ? iconBtn('down', 'Yuqoriga', move(i, -1), `sm flip ${i === 0 ? 'off' : ''}`, 18) : null,
+      online ? iconBtn('down', 'Pastga', move(i, 1), `sm ${i === items.length - 1 ? 'off' : ''}`, 18) : null,
+      online ? iconBtn('x', 'O\'chirish', guard(async () => { await api(`/api/offline/${t.id}`, { method: 'DELETE' }); await offline.forget(t.id); route(true); }), 'sm', 18) : null);
+  })));
+};
+offline.onChange(() => { if (location.pathname === '/offline' && mainEl && !document.querySelector('.sheet')) route(true); });
 function newPlaylist() {
   sheet(close => {
     const n = h('input', { placeholder: 'Pleylist nomi', 'aria-label': 'Pleylist nomi', required: true });
@@ -1227,6 +1286,9 @@ async function playFromLink(): Promise<void> {
   if (d?.tracks?.length) playList(d.tracks, 0); else toast(`"${q}" topilmadi`);
 }
 async function boot(): Promise<void> {
+  await offline.refreshReady();
+  // No network on opening: go straight to what can actually play.
+  if (!navigator.onLine && location.pathname === '/') history.replaceState(null, '', '/offline');
   const d = await api('/api/me');
   S.user = d.user; S.settings = d.settings;
   document.title = d.settings.siteName;
@@ -1234,6 +1296,6 @@ async function boot(): Promise<void> {
   if (lib) { S.liked = new Set(lib.liked); S.playlists = lib.playlists; }
   if (S.user) restoreListening();
   render();
-  if (S.user) { checkUpdate(); setTimeout(loadAllPages, 300); playFromLink(); }
+  if (S.user) { checkUpdate(); setTimeout(loadAllPages, 300); playFromLink(); if (navigator.onLine) refreshOffline(); }
 }
 boot().catch((e: Error) => root.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'panel' }, h('p', { class: 'err' }, e.message), h('button', { class: 'btn', onclick: () => location.reload() }, 'Qayta urinish')))));

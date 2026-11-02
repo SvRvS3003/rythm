@@ -425,7 +425,7 @@ route('POST', '/api/ads/:view/click', async (req, env, { user, params }) => {
 });
 
 // ---------- plans & payments ----------
-const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort });
+const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort, offlineLimit: p.offline_limit });
 
 route('GET', '/api/plans', async (req, env, { user }) => {
   const s = await settings(env);
@@ -518,6 +518,56 @@ route('POST', '/api/family', async (req, env, { user }) => {
 route('DELETE', '/api/family/:id', async (req, env, { user, params }) => {
   await run(env, 'UPDATE users SET family_owner_id=NULL WHERE id=? AND family_owner_id=?', params.id, user.id);
   return json({ ok: true });
+});
+
+// ---------- offline ----------
+// 0 closed, -1 unlimited, otherwise a song limit. It follows the plan, so a lapsed plan closes offline and paying reopens it.
+const OFFLINE_FOREVER = 3650 * DAY;
+async function offlineAccess(env: Env, user: Row): Promise<{ limit: number; until: number }> {
+  if (user.role === 'admin') return { limit: -1, until: now() + OFFLINE_FOREVER };
+  const e = await entitlement(env, user, await liveSettings(env));
+  if (e.reason !== 'plan' && e.reason !== 'family') {
+    // The plan system may be off for everyone; a real unexpired plan still counts.
+    if (user.plan_expires <= now()) return { limit: 0, until: 0 };
+    return { limit: (await one(env, 'SELECT offline_limit l FROM plans WHERE id=?', user.plan_id))?.l ?? 0, until: user.plan_expires };
+  }
+  const plan = await first(env, 'SELECT offline_limit FROM plans WHERE id=?', e.planId);
+  return { limit: plan?.offline_limit ?? 0, until: e.expires ?? 0 };
+}
+route('GET', '/api/offline', async (req, env, { user }) => {
+  const a = await offlineAccess(env, user);
+  const list = await tracks(env, 'JOIN offline_items o ON o.track_id=t.id WHERE o.user_id=? AND t.published=1 ORDER BY o.position,o.added_at', user.id);
+  // After a downgrade the songs beyond the new limit stay listed but locked, in the listener's own order.
+  return json({ limit: a.limit, validUntil: a.until, items: list.map((t, i) => ({ ...t, allowed: a.limit === -1 || i < a.limit })) });
+});
+route('POST', '/api/offline', async (req, env, { user }) => {
+  const a = await offlineAccess(env, user);
+  if (a.limit === 0) return fail(403, 'Oflayn tinglash tarifingizga kirmaydi');
+  const trackId = str((await body(req)).trackId, 40);
+  if (!await first(env, 'SELECT id FROM tracks WHERE id=? AND published=1', trackId)) return fail(404, 'Qo\'shiq topilmadi');
+  if (await first(env, 'SELECT track_id FROM offline_items WHERE user_id=? AND track_id=?', user.id, trackId)) return json({ ok: true });
+  const c = await one(env, 'SELECT COUNT(*) c, COALESCE(MAX(position),0) p FROM offline_items WHERE user_id=?', user.id);
+  if (a.limit !== -1 && c.c >= a.limit) return fail(409, `Tarifingizda ${a.limit} ta qo'shiq saqlash mumkin. Avval birini o'chiring.`);
+  await run(env, 'INSERT INTO offline_items (user_id,track_id,position,added_at) VALUES (?,?,?,?)', user.id, trackId, c.p + 1, now());
+  return json({ ok: true }, 201);
+});
+route('PUT', '/api/offline/order', async (req, env, { user }) => {
+  const ids = (await body(req)).ids;
+  if (!Array.isArray(ids) || ids.length > 5000) return fail(400, 'Tartib noto\'g\'ri');
+  await env.DB.batch(ids.map((id: unknown, i: number) => st(env, 'UPDATE offline_items SET position=? WHERE user_id=? AND track_id=?', i + 1, user.id, str(id, 40))));
+  return json({ ok: true });
+});
+route('DELETE', '/api/offline/:id', async (req, env, { user, params }) => {
+  await run(env, 'DELETE FROM offline_items WHERE user_id=? AND track_id=?', user.id, params.id);
+  return json({ ok: true });
+});
+route('GET', '/api/offline/:id/url', async (req, env, { user, params }) => {
+  const a = await offlineAccess(env, user);
+  if (a.limit === 0) return fail(403, 'Oflayn tinglash tarifingizga kirmaydi');
+  const row = await first(env, 'SELECT o.track_id,t.duration FROM offline_items o JOIN tracks t ON t.id=o.track_id WHERE o.user_id=? AND o.track_id=?', user.id, params.id);
+  if (!row) return fail(404, 'Avval qo\'shiqni oflayn ro\'yxatga qo\'shing');
+  const exp = now() + 6 * 3600;
+  return json({ url: `/media/stream/${params.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, params.id, user.id, exp)}` });
 });
 
 // ---------- media ----------
@@ -809,9 +859,9 @@ route('POST', '/api/admin/plans', async (req, env) => {
   const id = b.id ? str(b.id, 40) : uid();
   const name = str(b.name, 40);
   if (!name) return fail(400, 'Tarif nomini kiriting');
-  await run(env, `INSERT INTO plans (id,name,tagline,price_uzs,days,seats,features,active,sort) VALUES (?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,tagline=excluded.tagline,price_uzs=excluded.price_uzs,days=excluded.days,seats=excluded.seats,features=excluded.features,active=excluded.active,sort=excluded.sort`,
-    id, name, str(b.tagline, 120), int(b.price, 0, 100000000, 'Narx'), int(b.days ?? 30, 1, 3660, 'Muddat'), int(b.seats ?? 1, 1, 20, "Joylar soni"), str(b.features, 1000), b.active === false ? 0 : 1, int(b.sort ?? 0, 0, 1000, 'Tartib'));
+  await run(env, `INSERT INTO plans (id,name,tagline,price_uzs,days,seats,features,active,sort,offline_limit) VALUES (?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET offline_limit=excluded.offline_limit,name=excluded.name,tagline=excluded.tagline,price_uzs=excluded.price_uzs,days=excluded.days,seats=excluded.seats,features=excluded.features,active=excluded.active,sort=excluded.sort`,
+    id, name, str(b.tagline, 120), int(b.price, 0, 100000000, 'Narx'), int(b.days ?? 30, 1, 3660, 'Muddat'), int(b.seats ?? 1, 1, 20, "Joylar soni"), str(b.features, 1000), b.active === false ? 0 : 1, int(b.sort ?? 0, 0, 1000, 'Tartib'), int(b.offlineLimit ?? 0, -1, 100000, 'Oflayn limit'));
   return json({ id });
 }, 'admin');
 

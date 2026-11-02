@@ -289,6 +289,10 @@ html.ios .q-sheet { background: linear-gradient(135deg, #2a2632d9, #15131bd9); -
 html.ios .player .cover { border-radius: 16px; } /* follows the capsule: its 24 px corner minus the 8 px gap */
 .auth-apps { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
 .auth-apps .row { width: 100%; }
+.ib.flip svg { transform: rotate(180deg); }
+.ib.off { visibility: hidden; }
+.offline-list .tr .btn { flex: none; }
+.offline-list .hit:disabled { opacity: .55; }
 /* motion */
 .view.quiet > * { animation: none; }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }

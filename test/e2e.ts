@@ -221,6 +221,41 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   await J(admin('/api/admin/settings', { method: 'PATCH', body: { hero_sub: "Har bir qo'shiq siqilmagan WAV formatida." } }));
   ok('API keys: admin access, shown once, revocable, cannot manage keys');
 }
+// Offline: follows the plan, enforces the song limit, keeps the listener's order.
+{
+  const o = client(), mail = `off${Date.now()}@test.uz`;
+  await o('/api/auth/register', { method: 'POST', body: { name: 'Oflayn', email: mail, password: 'parol12345' } });
+  const oid = (await J(o('/api/me'))).user.id;
+  const wavs: string[] = [];
+  const small = ff('o.wav', ['-f', 'lavfi', '-i', 'sine=400:duration=1']);
+  for (let i = 0; i < 12; i++) { const u = await upload(small); wavs.push((await J(admin('/api/admin/tracks', { method: 'POST', body: { key: u.key, title: `Off${i}`, artist: 'OffIjrochi' } }))).id); }
+  try {
+    assert.equal((await J(o('/api/offline'))).limit, 0);
+    assert.equal((await J(o('/api/offline', { method: 'POST', body: { trackId: wavs[0] } }))).s, 403); ok('offline closed without a plan');
+    await J(admin(`/api/admin/users/${oid}`, { method: 'PATCH', body: { grantPlanId: 'duet' } }));
+    const st1 = await J(o('/api/offline')); assert.equal(st1.limit, 10); assert.ok(st1.validUntil > Date.now() / 1000);
+    assert.equal((await J(o(`/api/offline/${wavs[0]}/url`))).s, 404);
+    for (let i = 0; i < 10; i++) assert.equal((await J(o('/api/offline', { method: 'POST', body: { trackId: wavs[i] } }))).s, 201);
+    assert.equal((await J(o('/api/offline', { method: 'POST', body: { trackId: wavs[10] } }))).s, 409); ok('Boyvacha stops at 10 songs');
+    assert.equal((await J(o(`/api/offline/${wavs[0]}`, { method: 'DELETE' }))).s, 200);
+    assert.equal((await J(o('/api/offline', { method: 'POST', body: { trackId: wavs[10] } }))).s, 201); ok('removing a song frees its place');
+    const ids = (await J(o('/api/offline'))).items.map((t: any) => t.id).reverse();
+    assert.equal((await J(o('/api/offline/order', { method: 'PUT', body: { ids } }))).s, 200);
+    assert.deepEqual((await J(o('/api/offline'))).items.map((t: any) => t.id), ids); ok('the listener chooses the order');
+    const link = await J(o(`/api/offline/${ids[0]}/url`)); assert.ok(link.url);
+    assert.equal((await anon(link.url, { headers: { range: 'bytes=0-3' } })).status, 206);
+    await J(admin(`/api/admin/users/${oid}`, { method: 'PATCH', body: { revokePlan: true } }));
+    const lapsed = await J(o('/api/offline')); assert.equal(lapsed.limit, 0); assert.equal(lapsed.items.length, 10); assert.ok(lapsed.items.every((t: any) => !t.allowed));
+    assert.equal((await J(o(`/api/offline/${ids[0]}/url`))).s, 403); ok('a lapsed plan locks offline but keeps the list');
+    await J(admin(`/api/admin/users/${oid}`, { method: 'PATCH', body: { grantPlanId: 'orkestr' } }));
+    const open = await J(o('/api/offline')); assert.equal(open.limit, -1); assert.ok(open.items.every((t: any) => t.allowed));
+    assert.equal((await J(o('/api/offline', { method: 'POST', body: { trackId: wavs[11] } }))).s, 201); ok('paying reopens it; Karanda has no limit');
+    await J(admin(`/api/admin/users/${oid}`, { method: 'PATCH', body: { revokePlan: true } }));
+    await J(admin(`/api/admin/users/${oid}`, { method: 'PATCH', body: { grantPlanId: 'duet' } }));
+    const down = await J(o('/api/offline')); assert.equal(down.items.filter((t: any) => t.allowed).length, 10); assert.equal(down.items.length, 11); ok('a downgrade locks only the songs beyond the new limit');
+    assert.equal((await J(admin('/api/offline'))).limit, -1); ok('admin has no offline limit');
+  } finally { for (const id of wavs) await J(admin(`/api/admin/tracks/${id}`, { method: 'DELETE' })); }
+}
 // Family seats
 const friend = client(), fm = `f${Date.now()}@test.uz`;
 await friend('/api/auth/register', { method: 'POST', body: { name: 'Vali', email: fm, password: 'parol12345' } });

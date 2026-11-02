@@ -1,5 +1,7 @@
 // TypeScript, client/sw.ts, service worker: keeps upcoming WAVs on the device and serves them with byte ranges.
 // Only tracks the page explicitly prefetches are stored; a live stream is never duplicated.
+import { CHUNK, deviceKey, get, licenseOpen, openChunk, type License, type OfflineRecord } from './offline-store.ts';
+
 declare const BUILD_ID: string, SHELL_FILES: string[];
 const SHELL = `rythm-shell-${BUILD_ID}`;
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -11,7 +13,33 @@ const key = (id: string): string => `/audio/${id}`;
 sw.addEventListener('install', e => e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES)).then(() => sw.skipWaiting())));
 sw.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('rythm-shell-') && k !== SHELL).map(k => caches.delete(k)))).then(() => sw.clients.claim())));
 
+// Saved songs are decrypted only here, piece by piece as they play, and only while the plan's licence is open.
+async function serveOffline(req: Request, id: string): Promise<Response> {
+  const [song, license, key] = await Promise.all([get<OfflineRecord>('songs', id), get<License>('meta', 'license'), deviceKey(false)]);
+  if (!song?.done || !key || !licenseOpen(license, id)) return new Response(null, { status: 403 });
+  const size = song.size, base = { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'cache-control': 'no-store' };
+  const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.get('range') || '');
+  const start = r ? (r[1] ? Number(r[1]) : Math.max(0, size - Number(r[2]))) : 0;
+  const end = r && r[1] && r[2] ? Math.min(Number(r[2]), size - 1) : size - 1;
+  if (start > end || start >= size) return new Response(null, { status: 416, headers: { ...base, 'content-range': `bytes */${size}` } });
+  let n = Math.floor(start / CHUNK);
+  const body = new ReadableStream<Uint8Array>({
+    async pull(ctl) {
+      const off = n * CHUNK;
+      if (off > end) { ctl.close(); return; }
+      const plain = await openChunk(key, id, n);
+      ctl.enqueue(plain.subarray(Math.max(0, start - off), Math.min(plain.length, end - off + 1)));
+      n++;
+    },
+  });
+  const headers = { ...base, 'content-length': String(end - start + 1) };
+  return r ? new Response(body, { status: 206, headers: { ...headers, 'content-range': `bytes ${start}-${end}/${size}` } }) : new Response(body, { headers });
+}
+
 sw.addEventListener('fetch', e => {
+  const off = /^\/off\/([0-9a-f]{32})$/.exec(new URL(e.request.url).pathname);
+  if (off) return e.respondWith(serveOffline(e.request, off[1]));
+  if (/^\/media\/(covers|rhythm)\//.test(new URL(e.request.url).pathname)) return e.respondWith(caches.open('rythm-offline-img').then(c => c.match(e.request.url)).then(hit => hit || fetch(e.request)));
   const m = /^\/media\/stream\/([0-9a-f]{32})$/.exec(new URL(e.request.url).pathname);
   if (m) return e.respondWith(serve(e.request, m[1]));
   const u = new URL(e.request.url);
