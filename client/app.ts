@@ -290,8 +290,8 @@ audio.addEventListener('timeupdate', () => {
   paintTime();
   lockFrame();
 });
-audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); });
-audio.addEventListener('pause', () => { syncPlayer(); wakeLogo(); lockFrame(true); });
+audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); syncLockClock(); });
+audio.addEventListener('pause', () => { syncPlayer(); wakeLogo(); lockFrame(true); syncLockClock(); });
 audio.addEventListener('error', () => {
   if (P.ad || !P.track || audio.src === SILENT) return;
   // Usually an expired link after a long pause: fetch a fresh one once and resume in place.
@@ -474,18 +474,34 @@ function logoFrame(now: number): void {
   }
   logoRaf = moving ? requestAnimationFrame(logoFrame) : 0;
 }
-// Lock screen: the OS only takes still pictures, so the logo is redrawn from the beat map on each playback tick, about 4 times a second.
+// Lock screen: the OS only takes still pictures, so the logo is redrawn from the beat map, aiming at 30 pictures a second. What the phone really accepts is measured below.
 // Songs with their own cover keep it. shortcut: frame swapping, a truly smooth animated cover needs a native app.
 const lockCanvas = document.createElement('canvas');
-lockCanvas.width = lockCanvas.height = 256;
+lockCanvas.width = lockCanvas.height = 192; // small enough to encode inside a 33 ms frame
 const lockH = LOGO_REST.slice();
-let lockLast = 0, lockFrameNo = -1;
+let lockLast = 0, lockFrameNo = -1, lockCount = 0, lockSince = 0;
+let lockClock: Worker | null = null;
+// Runs only while the screen is off and music plays, so it costs nothing otherwise.
+function syncLockClock(): void {
+  const want = document.hidden && !audio.paused && !!P.track && !P.track.cover && !P.ad;
+  if (want && !lockClock) {
+    try { lockClock = new Worker('/tick.js'); lockClock.onmessage = () => lockFrame(); lockCount = 0; lockSince = performance.now(); } catch { lockClock = null; }
+  } else if (!want && lockClock) {
+    lockClock.terminate(); lockClock = null;
+    const secs = (performance.now() - lockSince) / 1000;
+    if (secs > 3) try { localStorage.setItem('lock-fps', (lockCount / secs).toFixed(1)); } catch { /* private mode */ }
+  }
+}
+document.addEventListener('visibilitychange', () => syncLockClock());
 function lockFrame(force = false): void {
   const t = P.track, now = performance.now();
-  if (!t || t.cover || P.ad || !document.hidden || !('mediaSession' in navigator) || (!force && now - lockLast < 240) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!t || t.cover || P.ad || !document.hidden || !('mediaSession' in navigator) || (!force && now - lockLast < 30) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const dt = Math.min(500, now - lockLast);
   lockLast = now;
+  lockCount++;
   const c = lockCanvas.getContext('2d');
   if (!c) return;
+  c.setTransform(0.75, 0, 0, 0.75, 0, 0); // drawing stays in 256 units
   // The map has 20 frames a second and this draws about 4, so each bar takes the loudest moment since the last picture: no hit is skipped.
   const d = audio.paused ? null : beat.data, end = Math.floor(audio.currentTime * FPS);
   const goal = d ? LOGO_REST.map((_, i) => {
@@ -500,13 +516,13 @@ function lockFrame(force = false): void {
   g.addColorStop(0, '#ff4d2e'); g.addColorStop(1, '#ffb02e');
   c.fillStyle = g;
   goal.forEach((v, i) => {
-    lockH[i] += (v - lockH[i]) * (v > lockH[i] ? 1 : 0.6); // hits land at once, the fall stays soft
+    lockH[i] += (v - lockH[i]) * (1 - Math.exp(-dt / (v > lockH[i] ? 45 : 170))); // quick rise, soft fall, correct at any frame rate
     const h = lockH[i] / 2;
     c.beginPath();
     c.roundRect((96 + i * 74) / 2, 128 - h / 2, 22, h, 11);
     c.fill();
   });
-  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: [{ src: lockCanvas.toDataURL('image/png'), sizes: '256x256', type: 'image/png' }] });
+  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: [{ src: lockCanvas.toDataURL('image/png'), sizes: '192x192', type: 'image/png' }] });
   syncPosition();
 }
 function wakeLogo(): void {
@@ -886,7 +902,7 @@ const V: Record<string, View> = {
     const probe = h('div', { style: 'position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)' });
     document.body.append(probe);
     const inset = getComputedStyle(probe);
-    const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${nav.standalone === true}`;
+    const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${nav.standalone === true} | qulf kadri ${(() => { try { return localStorage.getItem('lock-fps') || '-'; } catch { return '-'; } })()}/s`;
     probe.remove();
     el.append(...nodes([h('h1', null, 'Akkaunt'),
       h('form', { class: 'panel', onsubmit: guard(async (ev: Event) => { ev.preventDefault(); await api('/api/me', { method: 'PATCH', body: { name: name.value } }); u.name = name.value; toast('Saqlandi'); }) },

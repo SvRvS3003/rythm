@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const b = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
 const errs: string[] = []; p.on('pageerror', e => errs.push(e.message));
-await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; let hide = false; Object.defineProperty(document, 'hidden', { get: () => hide }); (window as any).__hide = (v: boolean) => { hide = v; }; });
+await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; let hide = false; Object.defineProperty(document, 'hidden', { get: () => hide }); (window as any).__hide = (v: boolean) => { hide = v; document.dispatchEvent(new Event('visibilitychange')); }; const M = window.MediaMetadata; (window as any).__frames = 0; (window as any).MediaMetadata = class extends M { constructor(o: any) { super(o); (window as any).__frames++; } }; });
 await p.goto('http://127.0.0.1:8787');
 await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
 const f = join(mkdtempSync(join(tmpdir(), 'ls-')), 'a.wav');
@@ -33,10 +33,14 @@ try {
   const art = () => p.evaluate(() => navigator.mediaSession.metadata?.artwork[0]?.src || '');
   assert.ok(!(await art()).startsWith('data:'), 'visible page keeps the plain icon');
   await p.evaluate(() => (window as any).__hide(true));
+  const f0 = await p.evaluate(() => (window as any).__frames), t0 = Date.now();
   const seen = new Set<string>();
   for (let i = 0; i < 16; i++) { await p.waitForTimeout(500); seen.add(await art()); }
   assert.ok([...seen].every(s => s.startsWith('data:image/png') || !s.startsWith('data:')), 'frames are images');
   assert.ok(seen.size >= 4, `only ${seen.size} different frames`);
+  const fps = (await p.evaluate(() => (window as any).__frames) - f0) / ((Date.now() - t0) / 1000);
+  assert.ok(fps >= 15, `only ${fps.toFixed(1)} frames a second`);
+  console.log(`ok lock screen clock runs at ${fps.toFixed(1)} frames a second`);
   const meta = await p.evaluate(() => ({ t: navigator.mediaSession.metadata?.title, a: navigator.mediaSession.metadata?.artist }));
   assert.deepEqual(meta, { t: 'QulfSinov', a: 'LS' });
   // Measure the middle bar in the frame the OS would show, against the song position.
@@ -60,6 +64,9 @@ try {
   assert.ok(loud.length && quiet.length, 'not enough samples');
   assert.ok(avg(loud) > avg(quiet) + 60, `picture does not follow the beat map: loud ${avg(loud).toFixed(0)} vs quiet ${avg(quiet).toFixed(0)}`);
   console.log(`ok bar follows the song: ${avg(loud).toFixed(0)} px on loud, ${avg(quiet).toFixed(0)} px on quiet`);
+  await p.evaluate(() => (window as any).__hide(false)); await p.waitForTimeout(200);
+  const kept = await p.evaluate(() => localStorage.getItem('lock-fps'));
+  assert.ok(Number(kept) >= 15, `rate not recorded: ${kept}`);
   assert.deepEqual(errs, []);
   console.log(`ok hidden playback swapped ${seen.size} logo frames, title kept`);
 } finally {
