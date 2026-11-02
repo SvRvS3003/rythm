@@ -1,0 +1,31 @@
+plugins { id 'com.android.application' version '8.7.3' }
+
+def baseUrl = (findProperty('baseUrl') ?: 'http://10.0.2.2:8787').toString().replaceAll('/+$', '')
+def props = new Properties()
+def propsFile = rootProject.file('keystore.properties')
+if (propsFile.exists()) propsFile.withInputStream { props.load(it) }
+
+android {
+    namespace 'uz.svrvs.rythm'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'uz.svrvs.rythm'
+        minSdk 26
+        targetSdk 34 // 35 forces edge-to-edge, which WebView safe-area insets do not report reliably.
+        versionCode((findProperty('versionCode') ?: '1') as int)
+        versionName((findProperty('versionName') ?: '1.0.0').toString())
+        buildConfigField 'String', 'BASE_URL', "\"${baseUrl}\""
+        manifestPlaceholders = [cleartext: baseUrl.startsWith('http://').toString()]
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    signingConfigs {
+        release {
+            if (props.storeFile) {
+                storeFile rootProject.file(props.storeFile); storePassword props.storePassword
+                keyAlias props.keyAlias; keyPassword props.keyPassword
+            }
+        }
+    }
+    buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
+}
