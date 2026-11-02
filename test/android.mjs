@@ -38,7 +38,8 @@ const email = `droid${Date.now()}@test.uz`;
 const ids = [];
 await api('/api/auth/login', { method: 'POST', body: { email: login, password: pass } });
 const before = await api('/api/admin/settings');
-try {
+const finishEarly = () => console.log('update step skipped');
+await (async () => { try {
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: 0, plans_enabled: true } });
   await wait(11000); // settings cache
   for (const [i, sec] of [[1, 70], [2, 14]]) {
@@ -89,7 +90,7 @@ try {
   assert.equal(now(), 'DroidSinov2'); ok('previous from system controls, off-screen');
 
   const cached = /uz\.svrvs\.rythm/.test(adb('shell', 'ps', '-A')); assert.ok(cached);
-  if (process.env.SKIP_UPDATE) { console.log('android checks passed (update skipped)'); process.exit(0); }
+  if (process.env.SKIP_UPDATE) return await finishEarly(); // through `finally`, so test data and settings are restored
   // Self-update without any store.
   await api(`/api/admin/releases?versionCode=3&versionName=1.0.2&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.2.apk') });
   adb('shell', 'appops', 'set', PKG, 'REQUEST_INSTALL_PACKAGES', 'allow');
@@ -107,5 +108,5 @@ try {
 } finally {
   for (const id of ids) await api(`/api/admin/tracks/${id}`, { method: 'DELETE' }).catch(() => {});
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: before.ad_every, plans_enabled: before.plans_enabled === '1' } }).catch(() => {});
-}
+} })();
 console.log('android checks passed', OUT);
