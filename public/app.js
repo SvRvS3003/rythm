@@ -15,6 +15,16 @@ export function h(tag, attrs, ...kids) {
 }
 // iPadOS Safari reports itself as a Mac, so touch points tell them apart.
 if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) document.documentElement.classList.add('ios');
+// An installed iOS app owns the whole screen, but its reported viewport can stop short of the top and bottom edges.
+function fitScreen() {
+  if (!navigator.standalone) return;
+  const portrait = matchMedia('(orientation: portrait)').matches;
+  document.documentElement.style.setProperty('--app-h', `${portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height)}px`);
+}
+fitScreen();
+addEventListener('resize', fitScreen);
+addEventListener('orientationchange', fitScreen);
+
 const I = {
   home: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', search: 'M11 3a8 8 0 1 1 0 16 8 8 0 0 1 0-16zM21 21l-4.3-4.3',
   lib: 'M4 4v16M9 4v16M14 4.5l5.5 15.2', star: 'M3 8l4 4 5-7 5 7 4-4-2 11H5z', user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0',
@@ -566,16 +576,22 @@ const V = {
     const u = S.user, e = u.entitlement;
     const label = { plans_off: 'Bepul rejim', admin: 'Admin', exempt: 'Maxsus ruxsat', plan: 'Faol tarif', family: 'Oila tarifi', free: 'Sado (bepul)' }[e?.reason] || '';
     const name = h('input', { value: u.name, 'aria-label': 'Ism' });
-    el.append(h('h1', null, 'Akkaunt'),
+    const probe = h('div', { style: 'position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)' });
+    document.body.append(probe);
+    const inset = getComputedStyle(probe);
+    const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${navigator.standalone === true}`;
+    probe.remove();
+    el.append(...[h('h1', null, 'Akkaunt'),
       h('form', { class: 'panel', onsubmit: guard(async ev => { ev.preventDefault(); await api('/api/me', { method: 'PATCH', body: { name: name.value } }); u.name = name.value; toast('Saqlandi'); }) },
         h('div', { class: 'row between wrap' }, h('div', { class: 'grow' }, h('h3', { class: 'clip' }, u.email)), h('span', { class: 'tag' }, label)),
         h('label', { class: 'f' }, 'Ism', name), h('button', { class: 'btn light' }, 'Saqlash')),
+      u.role === 'admin' ? h('p', { class: 'small dim', style: 'overflow-wrap:anywhere' }, diag) : null,
       h('div', { class: 'row wrap' },
         h('a', { class: 'btn', href: '/premium' }, 'Tariflar'),
         h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
         u.role === 'admin' ? h('a', { class: 'btn pri', href: '/admin' }, 'Admin panel') : null,
         S.settings.supportUrl ? h('a', { class: 'btn', href: S.settings.supportUrl, target: '_blank', rel: 'noopener' }, 'Yordam') : null,
-        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish')));
+        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))].filter(Boolean));
   },
   async install(el) {
     const ua = navigator.userAgent, iOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), android = /Android/.test(ua);

@@ -9,3 +9,4 @@ android/local.properties
 android/keystore.properties
 dist/
 .prod.vars
+.playwright-mcp/

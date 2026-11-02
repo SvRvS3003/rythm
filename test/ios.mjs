@@ -18,6 +18,15 @@ for (const [name, ua, on] of [['android', ANDROID, false], ['desktop', 'Mozilla/
   assert.equal(await p.evaluate(() => document.documentElement.classList.contains('ios')), on, name);
   console.log(`  ok ${name}: no glass`);
 }
+{ // Installed app whose reported window is shorter than the screen: must still fill the screen.
+  const ctx = await b.newContext({ viewport: { width: 390, height: 790 }, screen: { width: 390, height: 844 }, userAgent: IOS });
+  await ctx.addInitScript(() => Object.defineProperty(navigator, 'standalone', { get: () => true }));
+  const p = await ctx.newPage();
+  await p.goto(BASE); await p.waitForSelector('.auth');
+  assert.equal(await p.evaluate(() => document.body.getBoundingClientRect().height), 844);
+  await ctx.close();
+  console.log('  ok installed app fills the screen height');
+}
 const sizes = { 'iphone-se': [320, 568], 'iphone': [390, 844], 'duo-outer': [466, 678], 'duo-inner': [626, 890], 'phone-land': [844, 390], 'duo-inner-land': [890, 626], 'ipad': [820, 1180] };
 for (const [name, [w, h]] of Object.entries(sizes)) {
   const p = await open(IOS, w, h);
