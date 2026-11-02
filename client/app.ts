@@ -312,6 +312,7 @@ audio.addEventListener('ended', () => {
 });
 audio.addEventListener('timeupdate', () => {
   if (audio.src === SILENT) return;
+  if (audio.currentTime !== clockPos) { clockPos = audio.currentTime; if (performance.now() - clockAt > 1500) { clockAt = performance.now(); wakeLogo(); syncPlayer(); } else clockAt = performance.now(); }
   if (P.ad) return P.ad.tick();
   const delta = audio.currentTime - P.last;
   P.last = audio.currentTime;
@@ -487,8 +488,9 @@ function readRhythm(bins: Uint8Array): number | null {
   return Math.min(1, (bass / 1020) * 0.7 + (rise / 510));
 }
 // Logo: each of the 5 bars follows one frequency range of the playing song and eases back to the resting logo shape.
-// True only while sound really comes out: not paused, not buffering, not the silent unlock clip, not an ad.
-const sounding = (): boolean => !audio.paused && !audio.seeking && audio.readyState >= 3 && audio.src !== SILENT && !P.ad && !!P.track && P.resume === null;
+// True only while sound really comes out. The playback clock moving is the proof: readyState is reported differently across devices.
+let clockAt = 0, clockPos = -1;
+const sounding = (): boolean => !audio.paused && audio.src !== SILENT && !P.ad && !!P.track && P.resume === null && performance.now() - clockAt < 1500;
 const LOGO_REST = [80, 220, 320, 160, 60], LOGO_BANDS = [0, 3, 7, 10, 14];
 const LOGO_SVG = `<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="logo-g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="512" y2="512"><stop offset="0" stop-color="#ff4d2e"/><stop offset="1" stop-color="#ffb02e"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="#0b0a0d"/><g fill="url(#logo-g)">${LOGO_REST.map((r, i) => `<rect x="${96 + i * 74}" y="${256 - r / 2}" width="44" height="${r}" rx="22"/>`).join('')}</g></svg>`;
 const logoH = LOGO_REST.slice();
@@ -663,14 +665,28 @@ function attachSwipe(now: HTMLElement): void {
     if (sheetState.open && !(e.target as Element).closest('.q-sheet') && !(e.target as Element).closest('button[aria-label="Navbat"]') && !(e.target as Element).closest('button[aria-label="Yopish"]')) { e.stopPropagation(); e.preventDefault(); setQueue(false); }
   }, true);
 }
-const nebulaCanvas = h('canvas', { class: 'nebula', 'aria-hidden': 'true' });
+let nebulaCanvas = h('canvas', { class: 'nebula', 'aria-hidden': 'true' });
 let stopNebula: (() => void) | null = null;
+function startBackdrop(): void {
+  if (stopNebula || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  import('./nebula.ts').then(m => {
+    if (!ui.now?.classList.contains('show') || stopNebula) return;
+    stopNebula = m.startNebula(nebulaCanvas, sounding, readRhythm, () => {
+      // iOS takes the GPU away from a locked phone. A lost canvas never recovers, so a new one takes its place.
+      stopNebula = null;
+      const fresh = h('canvas', { class: 'nebula', 'aria-hidden': 'true' });
+      nebulaCanvas.replaceWith(fresh);
+      nebulaCanvas = fresh;
+      if (!document.hidden) startBackdrop();
+    });
+  }).catch(() => {});
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ui.now?.classList.contains('show')) startBackdrop(); });
 function openNow() {
   renderNow();
   ui.now?.classList.add('show');
-  if (stopNebula || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  import('./nebula.ts').then(m => { if (ui.now?.classList.contains('show') && !stopNebula) stopNebula = m.startNebula(nebulaCanvas, sounding, readRhythm); }).catch(() => {});
   loadRhythm();
+  startBackdrop();
 }
 // Slides away instead of vanishing; the mini player underneath takes over.
 function dismissNow(): void {

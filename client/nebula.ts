@@ -74,7 +74,7 @@ function target(gl: WebGLRenderingContext, size: number) {
 }
 
 // Returns a stop function, or null when WebGL is unavailable so the plain background stays.
-export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean, readRhythm: (bins: Uint8Array) => number | null): (() => void) | null {
+export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean, readRhythm: (bins: Uint8Array) => number | null, onLost: () => void): (() => void) | null {
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, powerPreference: 'low-power' });
   if (!gl) return null;
   let feed, final;
@@ -151,7 +151,7 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
     gl.uniform1f(final.u.t, t); gl.uniform1f(final.u.e, energy); gl.uniform1f(final.u.aspect, w / h);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   };
-  canvas.addEventListener('webglcontextlost', () => { stopped = true; cancelAnimationFrame(raf); canvas.style.display = 'none'; });
+  canvas.addEventListener('webglcontextlost', () => { stopped = true; cancelAnimationFrame(raf); onLost(); }, { once: true });
   raf = requestAnimationFrame(frame);
   return () => { stopped = true; cancelAnimationFrame(raf); };
 }

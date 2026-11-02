@@ -30,6 +30,21 @@ await p.locator('.now .playbtn').click(); await p.waitForTimeout(2500);
 const m0 = await shot(); await p.waitForTimeout(700); const m1 = await shot();
 assert.notEqual(Buffer.compare(m0, m1), 0, 'backdrop must move again after play');
 console.log('  ok backdrop moves only while sound plays');
+// A device that reports readyState differently still animates, and a lost GPU context brings the backdrop back.
+await p.evaluate(() => { Object.defineProperty((window as any).__a, 'readyState', { get: () => 2, configurable: true }); });
+await p.waitForTimeout(2500);
+const r0 = await shot(); await p.waitForTimeout(700); const r1 = await shot();
+assert.notEqual(Buffer.compare(r0, r1), 0, 'backdrop must not depend on readyState');
+await p.evaluate(() => { delete (window as any).__a.readyState; });
+const lost = await p.evaluate(() => { const c = document.querySelector<HTMLCanvasElement>('.nebula'); (window as any).__old = c; const e = c.getContext('webgl')?.getExtension('WEBGL_lose_context'); e?.loseContext(); return !!e; });
+if (lost) {
+  await p.waitForFunction(() => document.querySelector('.nebula') !== (window as any).__old, null, { timeout: 8000 });
+  await p.waitForTimeout(3000);
+  const l0 = await shot(); await p.waitForTimeout(700); const l1 = await shot();
+  assert.notEqual(Buffer.compare(l0, l1), 0, 'backdrop must return after losing the GPU');
+  assert.ok(await p.evaluate(() => { const c = document.querySelector<HTMLCanvasElement>('.nebula'); return getComputedStyle(c).display !== 'none' && c.width > 100; }));
+  console.log('  ok backdrop survives readyState differences and a lost GPU');
+} else console.log('  skipped lost GPU check, extension missing');
 // Queue sheet follows the drag, and speed or distance decide where it lands.
 const sheetTop = () => p.evaluate(() => document.querySelector('.q-sheet').getBoundingClientRect().top);
 const opened = () => p.evaluate(() => { const s = document.querySelector('.q-sheet'); const r = s.getBoundingClientRect(); return getComputedStyle(s).display !== 'none' && r.top < innerHeight - r.height * 0.95; });
@@ -76,10 +91,11 @@ assert.equal(await opened(), false); assert.equal(await isOpen(), true, 'list do
 await p.mouse.move(195, 120); await p.mouse.down(); await p.mouse.move(195, 620, { steps: 10 }); await p.waitForTimeout(250); await p.mouse.up(); await p.waitForTimeout(700);
 assert.equal(await isOpen(), false, 'a long drag down must close the player');
 assert.equal(await p.locator('.player.show').count(), 1, 'music keeps its mini player');
-await p.locator('.player .info').click(); await p.waitForSelector('.now.show');
+await p.locator('.player .info').click(); await p.waitForSelector('.now.show'); await p.waitForTimeout(900); // let the opening slide finish before touching
 console.log('  ok art down closes with the finger, list down returns to art');
 if (name === 'chromium') { // real touch events, which WebKit in Playwright cannot synthesise
   const cdp = await p.context().newCDPSession(p);
+  await p.evaluate(() => { const l: string[] = []; (window as any).__tl = l; for (const e of ['touchstart', 'touchend', 'touchcancel']) window.addEventListener(e, (x: any) => l.push(`${e}@${x.target?.className?.toString?.().slice(0, 14) || x.target?.tagName}`), true); });
   const touch = (type: string, y?: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: y === undefined ? [] : [{ x: 195, y }] } as any);
   await touch('touchStart', 760);
   for (let y = 740; y >= 300; y -= 40) { await touch('touchMove', y); await p.waitForTimeout(25); }
@@ -88,7 +104,8 @@ if (name === 'chromium') { // real touch events, which WebKit in Playwright cann
   await touch('touchEnd');
   for (let i = 0; i < 20 && !(await p.evaluate(() => (document.querySelector('.now') as HTMLElement).style.getPropertyValue('--q') === '1.0000')); i++) await p.waitForTimeout(250); // software GL delays input here
   await p.waitForTimeout(600);
-  assert.equal(await opened(), true, 'touch drag must open');
+  const touchState = await p.evaluate(() => { const v = document.querySelector<HTMLElement>('.now'); return { q: v.style.getPropertyValue('--q'), cls: v.className, log: (window as any).__tl }; });
+  assert.equal(await opened(), true, `touch drag must open: ${JSON.stringify(touchState)}`);
   console.log('  ok touch swipe opens the sheet');
   await p.mouse.click(195, 70); await p.waitForTimeout(500);
 }

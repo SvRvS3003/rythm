@@ -199,6 +199,28 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   assert.ok(!(await J(admin('/api/admin/users?q=&filter=&offset=0'))).users.some((u: any) => u.id === victim));
   assert.equal((await J(evil('/api/me'))).user, null); ok('delete: admin only, must be blocked first, admin account protected, session ends');
 }
+// Admin API keys: full admin access for scripts, shown once, revocable, cannot manage keys.
+{
+  const made = await J(admin('/api/admin/api-keys', { method: 'POST', body: { name: 'Skript' } }));
+  assert.equal(made.s, 201); assert.match(made.key, /^rk_[0-9a-f]{64}$/);
+  const bearer = { authorization: `Bearer ${made.key}` };
+  const stats = await J(anon('/api/admin/stats', { headers: bearer })); assert.equal(stats.s, 200); assert.ok(stats.users >= 1);
+  const patched = await J(anon('/api/admin/settings', { method: 'PATCH', headers: { ...bearer, 'content-type': 'application/json' }, raw: JSON.stringify({ hero_sub: 'API orqali' }) })); assert.equal(patched.s, 200);
+  assert.equal((await J(admin('/api/admin/settings'))).hero_sub, 'API orqali');
+  assert.equal((await J(anon('/api/admin/stats', { headers: { authorization: `Bearer rk_${'0'.repeat(64)}` } }))).s, 401);
+  assert.equal((await J(anon('/api/admin/stats', { headers: { authorization: 'Bearer nonsense' } }))).s, 401);
+  assert.equal((await J(anon('/api/admin/api-keys', { headers: bearer }))).s, 403);
+  assert.equal((await J(anon('/api/admin/api-keys', { method: 'POST', headers: { ...bearer, 'content-type': 'application/json' }, raw: '{"name":"x"}' }))).s, 403);
+  const docs = await J(anon('/api/admin/docs', { headers: bearer }));
+  assert.ok(docs.endpoints.some((d: any) => d.path === '/api/admin/tracks' && d.method === 'POST')); assert.ok(!docs.endpoints.some((d: any) => d.path.includes('api-keys')));
+  const listed2 = await J(admin('/api/admin/api-keys')); const mine = listed2.keys.find((k: any) => k.name === 'Skript');
+  assert.equal(JSON.stringify(listed2).includes(made.key), false);
+  assert.equal(mine.hint, made.key.slice(-6));
+  assert.equal((await J(admin(`/api/admin/api-keys/${mine.id}`, { method: 'DELETE' }))).s, 200);
+  assert.equal((await J(anon('/api/admin/stats', { headers: bearer }))).s, 401);
+  await J(admin('/api/admin/settings', { method: 'PATCH', body: { hero_sub: "Har bir qo'shiq siqilmagan WAV formatida." } }));
+  ok('API keys: admin access, shown once, revocable, cannot manage keys');
+}
 // Family seats
 const friend = client(), fm = `f${Date.now()}@test.uz`;
 await friend('/api/auth/register', { method: 'POST', body: { name: 'Vali', email: fm, password: 'parol12345' } });

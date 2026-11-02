@@ -3,7 +3,7 @@ import { analyzeWav } from './rhythm.ts';
 import { h, api, cover, fmt, money, toast, sheet, refresh, go, S, type Row } from './app.ts';
 
 const guard = <A extends unknown[]>(fn: (...a: A) => unknown) => async (...a: A): Promise<void> => { try { await fn(...a); } catch (e) { toast((e as Error).message); } };
-const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['settings', 'Sozlamalar']];
+const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['api', 'API'], ['settings', 'Sozlamalar']];
 const field = (label: string, input: Node) => h('label', { class: 'f' }, label, input);
 const date = (t: number): string => (t ? new Date(t * 1000).toLocaleDateString('ru-RU') : '—');
 const gb = (b: number): string => (b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`);
@@ -245,6 +245,27 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
         h('label', { class: 'row' }, force, 'Majburiy yangilanish'), btn),
       h('section', { class: 'panel' }, h('h2', null, 'Versiyalar'), releases.length ? releases.map((r: Row) => h('div', { class: 'item' }, h('div', { class: 'body' }, h('div', { style: 'font-weight:700' }, `${r.versionName} (${r.versionCode})`), h('div', { class: 'small muted' }, `${gb(r.size)} · ${date(r.createdAt)}${r.force ? ' · majburiy' : ''}`)), h('button', { class: 'btn sm danger', onclick: guard(async () => { await api(`/api/admin/releases/${r.id}`, { method: 'DELETE' }); refresh(); }) }, 'O\'chirish'))) : h('p', { class: 'muted' }, 'Hali APK yuklanmagan.')),
       h('section', { class: 'panel' }, h('h2', null, 'O\'rnatish sahifasi'), h('p', { class: 'muted small', style: 'overflow-wrap:anywhere' }, `${location.origin}/install`), h('div', { class: 'row wrap' }, h('button', { class: 'btn sm', onclick: () => navigator.clipboard?.writeText(`${location.origin}/install`).then(() => toast('Nusxalandi')) }, 'Havolani nusxalash'), h('a', { class: 'btn sm', href: '/install' }, 'Ochish'))));
+  },
+
+  async api(el) {
+    const [{ keys }, docs] = await Promise.all([api('/api/admin/api-keys'), api('/api/admin/docs')]);
+    const name = h('input', { required: true, placeholder: 'Masalan: Mening skriptim', 'aria-label': 'Kalit nomi' });
+    const made = h('div', { class: 'stack' });
+    el.append(
+      h('form', { class: 'panel', onsubmit: guard(async (e: Event) => {
+        e.preventDefault();
+        const { key } = await api('/api/admin/api-keys', { method: 'POST', body: { name: name.value } });
+        name.value = '';
+        made.replaceChildren(h('div', { class: 'upsell' }, h('div', { class: 'grow' }, h('h3', null, 'Kalitni hozir saqlang'), h('p', { class: 'small muted' }, 'U boshqa ko\'rsatilmaydi.'), h('code', { style: 'overflow-wrap:anywhere;font-size:13px' }, key)), h('button', { type: 'button', class: 'btn sm pri', onclick: () => navigator.clipboard?.writeText(key).then(() => toast('Nusxalandi')) }, 'Nusxalash')));
+        list.replaceChildren(...rows((await api('/api/admin/api-keys')).keys));
+      }) }, h('h2', null, 'API kalitlar'), h('p', { class: 'muted small' }, 'Kalit admin huquqi bilan ishlaydi: qo\'shiq, foydalanuvchi, tarif, reklama va sozlamalarni boshqaradi. Uni hech kimga bermang.'), name, h('button', { class: 'btn pri' }, 'Yangi kalit yaratish')),
+      made);
+    const rows = (l: Row[]) => (l.length ? l.map((k: Row) => h('div', { class: 'item' }, h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, k.name), h('div', { class: 'small muted' }, `…${k.hint} · yaratilgan ${date(k.created_at)} · ishlatilgan ${date(k.last_used)}`)),
+      h('button', { class: 'btn sm danger', onclick: guard(async () => { await api(`/api/admin/api-keys/${k.id}`, { method: 'DELETE' }); toast('Kalit bekor qilindi'); refresh(); }) }, 'Bekor qilish'))) : [h('p', { class: 'muted' }, 'Hali kalit yo\'q.')]);
+    const list = h('section', { class: 'panel' }, rows(keys));
+    el.append(list, h('section', { class: 'panel' }, h('h2', null, 'Endpointlar'),
+      h('pre', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:0' }, `curl ${location.origin}/api/admin/stats -H "Authorization: Bearer rk_..."`),
+      docs.endpoints.map((d: Row) => h('div', { class: 'small', style: 'overflow-wrap:anywhere;font-variant-numeric:tabular-nums' }, h('b', { style: 'display:inline-block;width:62px' }, d.method), d.path))));
   },
 
   async settings(el) {

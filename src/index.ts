@@ -38,11 +38,11 @@ const int = (v: unknown, min: number, max: number, name = 'Qiymat'): number => {
 const media = (key: string | null | undefined): string | null => (key ? `/media/${key}` : null);
 
 // ---------- routing ----------
-const routes: { method: string; re: RegExp; names: string[]; handler: Handler; guard: Guard }[] = [];
+const routes: { method: string; path: string; re: RegExp; names: string[]; handler: Handler; guard: Guard }[] = [];
 const route = (method: string, path: string, handler: Handler, guard: Guard = 'user') => {
   const names: string[] = [];
   const re = new RegExp('^' + path.replace(/:(\w+)/g, (_, n: string) => (names.push(n), '([^/]+)')) + '$');
-  routes.push({ method, re, names, handler, guard });
+  routes.push({ method, path, re, names, handler, guard });
 };
 
 async function body(req: Request): Promise<any> {
@@ -60,7 +60,16 @@ async function startSession(env: Env, req: Request, userId: string): Promise<str
   await run(env, 'INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)', await sha256(token), userId, now() + 60 * DAY);
   return sessionCookie(req, token, 60 * DAY);
 }
+// Scripts send "Authorization: Bearer rk_...". A key acts as the admin; only its hash is stored.
+async function apiKeyUser(env: Env, token: string): Promise<Row | null> {
+  const key = await first(env, 'SELECT id,last_used FROM api_keys WHERE key_hash=?', await sha256(token));
+  if (!key) return fail(401, 'API kalit noto\'g\'ri');
+  if (now() - key.last_used > 300) await run(env, 'UPDATE api_keys SET last_used=? WHERE id=?', now(), key.id);
+  return first(env, "SELECT * FROM users WHERE role='admin' AND banned=0 LIMIT 1");
+}
 async function currentUser(env: Env, req: Request): Promise<Row | null> {
+  const bearer = /^Bearer (rk_[0-9a-f]{64})$/.exec(req.headers.get('authorization') || '');
+  if (bearer) return apiKeyUser(env, bearer[1]);
   const m = new RegExp(`${cookieName}=([0-9a-f]{64})`).exec(req.headers.get('cookie') || '');
   if (!m) return null;
   return first(env, 'SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.banned=0', await sha256(m[1]), now());
@@ -854,6 +863,24 @@ route('DELETE', '/api/admin/ads/:id', async (req, env, { params }) => {
   await env.BUCKET.delete([a.audio_key, a.image_key].filter(Boolean));
   return json({ ok: true });
 }, 'admin');
+
+// Keys are managed only from a signed-in session, so a leaked key cannot mint more keys or hide itself.
+const panelOnly = (req: Request): void => { if (req.headers.has('authorization')) fail(403, 'API kalitlarni faqat admin paneldan boshqarish mumkin'); };
+route('GET', '/api/admin/api-keys', async (req, env) => { panelOnly(req); return json({ keys: await all(env, 'SELECT id,name,hint,created_at,last_used FROM api_keys ORDER BY created_at DESC') }); }, 'admin');
+route('POST', '/api/admin/api-keys', async (req, env) => {
+  panelOnly(req);
+  const name = str((await body(req)).name, 60);
+  if (!name) return fail(400, 'Kalit nomini kiriting');
+  const key = `rk_${hex(crypto.getRandomValues(new Uint8Array(32)))}`;
+  await run(env, 'INSERT INTO api_keys (id,name,key_hash,hint,created_at) VALUES (?,?,?,?,?)', uid(), name, await sha256(key), key.slice(-6), now());
+  return json({ key }, 201); // the only time the full key is ever shown
+}, 'admin');
+route('DELETE', '/api/admin/api-keys/:id', async (req, env, { params }) => { panelOnly(req); await run(env, 'DELETE FROM api_keys WHERE id=?', params.id); return json({ ok: true }); }, 'admin');
+// Built from the live route table, so it can never fall behind the code.
+route('GET', '/api/admin/docs', async () => json({
+  auth: 'Authorization: Bearer rk_...',
+  endpoints: routes.filter(r => r.guard === 'admin' && !r.path.includes('api-keys')).map(r => ({ method: r.method, path: r.path })),
+}), 'admin');
 
 const SETTING_KEYS = ['smtp_user', 'click_service_id', 'click_merchant_id', 'email_from', 'plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
 // The secret can be replaced from the panel but never read back.
