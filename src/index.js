@@ -287,20 +287,25 @@ const streamSig = (env, trackId, userId, exp) => hmac(env.SIGNING_SECRET, `${tra
 
 // Ads are decided here, not in the client: without a completed ad view no stream URL is issued.
 route('POST', '/api/play', async (req, env, { user }) => {
-  const trackId = str((await body(req)).trackId, 40);
+  const b = await body(req);
+  const trackId = str(b.trackId, 40);
   const t = await first(env, 'SELECT id,duration FROM tracks WHERE id=? AND published=1', trackId);
   if (!t) fail(404, 'Qo\'shiq topilmadi');
   const s = await liveSettings(env);
   const e = await entitlement(env, user, s);
   const every = Number(s.ad_every) || 0;
   if (!e.premium && every > 0 && user.plays_since_ad >= every) {
-    const ad = await first(env, 'SELECT * FROM ads WHERE active=1 ORDER BY RANDOM() LIMIT 1');
+    // A silent ad cannot run on a locked screen and would stall the queue. The counter stays due, so it shows on the next foreground play.
+    // shortcut: `hidden` is client-reported and a modified client could skip silent ads, upgrade by uploading audio ads, which always play.
+    const ad = await first(env, `SELECT * FROM ads WHERE active=1 ${b.hidden ? 'AND audio_key IS NOT NULL' : ''} ORDER BY RANDOM() LIMIT 1`);
+    if (ad || !b.hidden) {
     const duration = ad ? ad.duration : Number(s.ad_seconds) || 15;
     const viewId = uid();
     const writes = [st(env, 'INSERT INTO ad_views (id,user_id,ad_id,duration,started_at) VALUES (?,?,?,?,?)', viewId, user.id, ad?.id ?? null, duration, now())];
     if (ad) writes.push(st(env, 'UPDATE ads SET impressions=impressions+1 WHERE id=?', ad.id));
     await env.DB.batch(writes);
     return json({ ad: { viewId, duration, title: ad?.title ?? `${s.site_name} reklamasiz`, body: ad?.body ?? 'Tarif oling va musiqani reklamasiz, uzluksiz tinglang.', image: media(ad?.image_key), audio: media(ad?.audio_key), ctaLabel: ad?.cta_label ?? '', ctaUrl: ad?.cta_url ?? '', trackId: ad?.track_id ?? null } });
+    }
   }
   const t0 = now(), exp = t0 + Math.ceil(t.duration) + 6 * 3600;
   // Paying listeners cause no write here; a start is only stored once it counts, keeping D1 writes and size down.

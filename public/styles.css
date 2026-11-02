@@ -11,6 +11,8 @@
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; margin: 0; background: var(--bg); overflow: hidden; }
+/* Pins the app to the real screen in iOS standalone, where 100% height can stop short of the edges. */
+body { position: fixed; inset: 0; width: 100%; }
 body { color: var(--t1); font: 500 15px/1.45 Manrope, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
 #root { height: 100%; }
 h1, h2, h3, p { margin: 0; overflow-wrap: anywhere; }
@@ -55,6 +57,7 @@ button:disabled { opacity: .45; cursor: default; }
 .ib:hover { background: #ffffff12; }
 .ib.on { color: var(--a2); }
 .ib.liked { color: var(--a1); }
+.ib.liked svg { fill: currentColor; }
 .ib.sm { width: 36px; height: 36px; }
 .playbtn { width: 44px; height: 44px; flex: none; border-radius: 50%; background: var(--t1); color: #0b0a0d; display: grid; place-items: center; }
 .playbtn.big { width: 68px; height: 68px; background: var(--grad); color: #1a0a06; }
@@ -100,7 +103,19 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 .tr .cover { width: 46px; height: 46px; border-radius: 7px; font-size: 18px; }
 .tr .t { font-weight: 700; }
 .tr .s { font-size: 13px; color: var(--t2); }
-.tr .alb, .tr .dur { display: none; }
+.alb, .dur, .thead { display: none; }
+.tr .n, .thead .n { width: 22px; flex: none; text-align: center; color: var(--t3); font-size: 13px; font-variant-numeric: tabular-nums; }
+.tr .n .eq { display: none; height: 14px; align-items: flex-end; justify-content: center; gap: 2px; }
+.tr.cur .n span { display: none; }
+.tr.cur .n .eq { display: flex; }
+.eq b { display: block; width: 3px; height: 30%; border-radius: 2px; background: var(--a2); }
+html.playing .eq b { animation: eq .9s ease-in-out infinite alternate; }
+.eq b:nth-child(2) { animation-delay: -.3s !important; }
+.eq b:nth-child(3) { animation-delay: -.6s !important; }
+.quick { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.qt { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 52px; padding-right: 10px; border-radius: 10px; background: #ffffff12; font-size: 13px; font-weight: 700; text-align: left; overflow: hidden; transition: transform .15s, background .15s; }
+.qt .cover { width: 52px; height: 52px; font-size: 20px; }
+.qt:active { transform: scale(.97); }
 
 /* page header */
 .head { display: flex; flex-direction: column; gap: 16px; align-items: flex-start; min-width: 0; }
@@ -186,7 +201,11 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
   .two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .head { flex-direction: row; align-items: flex-end; }
   .head .cover { width: 190px; height: 190px; align-self: flex-end; }
-  .tr .dur { display: block; color: var(--t2); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .tr .dur, .thead .dur { display: block; width: 44px; flex: none; text-align: right; color: var(--t2); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .tr .alb, .thead .alb { display: block; flex: 0 1 28%; min-width: 0; color: var(--t2); font-size: 13px; }
+  .thead { display: flex; align-items: center; gap: 12px; padding: 0 8px 8px; margin: 0 -8px 4px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 700; color: var(--t3); }
+  .thead .pad { width: 84px; flex: none; }
+  .quick { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .scrim { align-items: center; padding: 20px; }
   .sheet { border-radius: 18px; padding: 22px; }
   .shelf { grid-auto-columns: minmax(150px, 180px); }
@@ -200,7 +219,6 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
   .side nav a:hover { color: var(--t1); }
   .side nav a.on { background: var(--s2); color: var(--t1); }
   .side .lists { flex: 1; overflow: auto; border-top: 1px solid var(--line); padding-top: 12px; min-height: 60px; }
-  .tr .alb { display: block; flex: 0 1 28%; min-width: 0; color: var(--t2); font-size: 13px; }
   .player { display: none; min-height: var(--bar); padding: 10px calc(18px + var(--sar)) calc(10px + var(--sab)) calc(18px + var(--sal)); gap: 16px; }
   .player.show { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); }
   .player .thin, .player > .ib, .player > .playbtn { display: none; }
@@ -229,7 +247,24 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
   .now .pane { gap: 6px; }
   .playbtn.big { width: 58px; height: 58px; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+/* motion */
+@keyframes eq { from { height: 25%; } to { height: 100%; } }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes sheetUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes nowUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.view > * { animation: rise .32s cubic-bezier(.2, .7, .2, 1) both; }
+.view > *:nth-child(2) { animation-delay: .04s; } .view > *:nth-child(3) { animation-delay: .08s; } .view > *:nth-child(4) { animation-delay: .12s; }
+.now.show { animation: nowUp .3s cubic-bezier(.2, .8, .2, 1); }
+.sheet { animation: sheetUp .24s cubic-bezier(.2, .8, .2, 1); }
+.scrim, .ad { animation: fade .2s ease; }
+.card .cover { transition: transform .2s cubic-bezier(.2, .7, .2, 1); }
+@media (hover: hover) { .card:hover .cover { transform: scale(1.03); } }
+.card:active .cover, .btn:active, .pill:active, .ib:active, .playbtn:active { transform: scale(.95); }
+.btn, .pill, .ib, .playbtn { transition: transform .12s, background .15s; }
+.now .art { transition: transform .35s cubic-bezier(.2, .7, .2, 1); transform: scale(.94); }
+html.playing .now .art { transform: none; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 
 /* iOS only: Liquid Glass look. Blur stays on floating surfaces; panels inside scrollers skip it to keep scrolling smooth.
    shortcut: Safari has no refraction in backdrop-filter, real lensing needs a native SwiftUI app. */

@@ -79,6 +79,8 @@ await settle();
 const P = () => J(user('/api/play', { method: 'POST', body: { trackId: T.id } }));
 assert.ok((await P()).url); assert.ok((await P()).url);
 const adr = await P(); assert.ok(adr.ad && !adr.url); ok('4th play returns an ad and no stream URL');
+const bg = await J(user('/api/play', { method: 'POST', body: { trackId: T.id, hidden: true } })); assert.ok(bg.url && !bg.ad);
+assert.ok((await P()).ad); ok('locked screen with no audio ad keeps playing; the ad still waits for the foreground');
 const early = await J(user(`/api/ads/${adr.ad.viewId}/complete`, { method: 'POST' })); assert.ok(early.s === 409 || adr.ad.duration <= 2, 'early');
 ok('ad cannot be completed instantly');
 await new Promise(r => setTimeout(r, 3200));

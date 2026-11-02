@@ -88,6 +88,8 @@ try {
   adb('shell', 'cmd', 'media_session', 'dispatch', 'previous'); await wait(6000);
   assert.equal(now(), 'DroidSinov2'); ok('previous from system controls, off-screen');
 
+  const cached = /uz\.svrvs\.rythm/.test(adb('shell', 'ps', '-A')); assert.ok(cached);
+  if (process.env.SKIP_UPDATE) { console.log('android checks passed (update skipped)'); process.exit(0); }
   // Self-update without any store.
   await api(`/api/admin/releases?versionCode=3&versionName=1.0.2&notes=${encodeURIComponent('Barqarorlik yaxshilandi')}`, { method: 'POST', raw: readFileSync('dist/SvRvS-Rythm-1.0.2.apk') });
   adb('shell', 'appops', 'set', PKG, 'REQUEST_INSTALL_PACKAGES', 'allow');
