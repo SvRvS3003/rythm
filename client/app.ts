@@ -110,7 +110,7 @@ function pageChanged(path: string, data: Row): void {
 }
 function loadAllPages(): void {
   if (!S.user) return;
-  const list = ['/api/me', '/api/home', '/api/library', '/api/plans', '/api/likes'];
+  const list = ['/api/me', '/api/home', '/api/catalog', '/api/library', '/api/plans', '/api/likes'];
   if (S.user.role === 'admin') list.push('/api/admin/stats', '/api/admin/tracks');
   for (const p of list) if (Date.now() - (store.get(p)?.at || 0) > FRESH_MS) loadPage(p).catch(() => {});
 }
@@ -169,8 +169,8 @@ function savedRepeat(): 'off' | 'all' | 'one' {
 }
 const P: {
   queue: Track[]; i: number; track: Track | null; shuffle: boolean; repeat: 'off' | 'all' | 'one'; playId: string | null; heard: number; last: number; counted: boolean; token: number;
-  ad: { finish: () => void; tick: () => void } | null; retried: boolean; next: { i: number; grant: Row } | null; pick: number | null; preparing: boolean; speed: number; afterAd: Row | null;
-} = { queue: [], i: -1, track: null, shuffle: false, repeat: savedRepeat(), playId: null, heard: 0, last: 0, counted: false, token: 0, ad: null, retried: false, next: null, pick: null, preparing: false, speed: 0, afterAd: null };
+  ad: { finish: () => void; tick: () => void } | null; retried: boolean; next: { i: number; grant: Row } | null; pick: number | null; preparing: boolean; speed: number; afterAd: Row | null; resume: number | null;
+} = { queue: [], i: -1, track: null, shuffle: false, repeat: savedRepeat(), playId: null, heard: 0, last: 0, counted: false, token: 0, ad: null, retried: false, next: null, pick: null, preparing: false, speed: 0, afterAd: null, resume: null };
 const ui: { player?: HTMLElement; thin?: HTMLElement; now?: HTMLElement; miniPlay?: HTMLElement; barPlay?: HTMLElement; sh?: HTMLElement; rp?: HTMLElement; nowMode?: string } = {};
 
 // iOS only lets an element keep playing after async work if it has played inside a gesture once.
@@ -183,6 +183,26 @@ document.addEventListener('pointerdown', () => {
   audio.play().then(() => { if (audio.src === SILENT) audio.pause(); }).catch(() => {});
 }, { capture: true, once: false });
 
+// Where listening stopped, so the app reopens on the same song and second. Only ever a convenience, so storage failures are ignored.
+let savedAt = 0;
+function saveListening(): void {
+  savedAt = performance.now();
+  const t = P.track, pos = P.resume ?? audio.currentTime;
+  if (!t || !S.user || audio.src === SILENT) return;
+  // A finished song reopens from its start.
+  try { localStorage.setItem('listening', JSON.stringify({ user: S.user.id, queue: P.queue.slice(0, 200), i: Math.min(P.i, 199), pos: pos >= t.duration - 2 ? 0 : pos })); } catch { /* private mode */ }
+}
+function restoreListening(): void {
+  try {
+    const s = JSON.parse(localStorage.getItem('listening') || 'null');
+    if (!s || s.user !== S.user?.id || P.track || !s.queue?.[s.i]) return;
+    P.queue = s.queue; P.i = s.i; P.track = s.queue[s.i]; P.resume = Number(s.pos) || 0;
+    loadRhythm();
+    syncMediaSession();
+  } catch { /* unreadable: start clean */ }
+}
+addEventListener('pagehide', saveListening);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveListening(); });
 const sw = (msg: unknown) => navigator.serviceWorker?.controller?.postMessage(msg);
 navigator.serviceWorker?.addEventListener('message', e => {
   if (e.data?.bytes && e.data.ms > 200) P.speed = e.data.bytes / (e.data.ms / 1000);
@@ -203,10 +223,11 @@ export function playList(list: Track[], index = 0): void {
 }
 // No await in here: iOS may freeze a backgrounded page during any network wait once audio has stopped.
 function startGrant(i: number, r: Row, resumeAt = 0): void {
-  P.i = i; P.track = P.queue[i]; P.heard = 0; P.last = resumeAt; P.counted = false; P.playId = r.playId; P.next = null; P.pick = null; P.preparing = false;
+  P.i = i; P.track = P.queue[i]; P.heard = 0; P.last = resumeAt; P.counted = false; P.playId = r.playId; P.next = null; P.pick = null; P.preparing = false; P.resume = null;
   sw({ type: 'cancel' });
   audio.src = r.url;
-  if (resumeAt) audio.currentTime = resumeAt;
+  // Safari ignores a seek made before the file's length is known.
+  if (resumeAt) audio.addEventListener('loadedmetadata', () => { audio.currentTime = resumeAt; }, { once: true });
   audio.play().catch(() => syncPlayer());
   syncMediaSession();
   syncPlayer();
@@ -271,14 +292,26 @@ export const P_next = async () => {
   try { loadAt(await pickNext()); } catch (e) { toast((e as Error).message); }
 };
 const P_prev = () => { if (audio.currentTime > 4) audio.currentTime = 0; else loadAt(Math.max(0, P.i - 1)); };
-const toggle = () => { if (P.ad) return; if (audio.paused) audio.play().catch(() => {}); else audio.pause(); };
+// Lock screen and headset commands say exactly what they want. Toggling here would invert the player whenever a command repeats.
+function resumePlay(): void {
+  if (P.ad) return;
+  if (P.resume !== null) { loadAt(P.i, P.resume); return; }
+  if (!audio.paused) return;
+  const at = audio.currentTime;
+  // After a long pause the link or audio session may be gone: fetch a fresh one and continue from the same second.
+  audio.play().catch(() => { if (P.track) loadAt(P.i, at); });
+}
+const pausePlay = (): void => { if (!P.ad) audio.pause(); };
+const toggle = () => { if (P.ad) return; if (P.resume !== null) { loadAt(P.i, P.resume); return; } if (audio.paused) audio.play().catch(() => {}); else audio.pause(); };
 
 audio.addEventListener('ended', () => {
+  if (audio.src === SILENT) return; // the unlock clip must not advance a restored queue
   if (P.ad) return P.ad.finish();
   if (P.repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return; }
   if (autoAdvances()) P_next(); else syncPlayer();
 });
 audio.addEventListener('timeupdate', () => {
+  if (audio.src === SILENT) return;
   if (P.ad) return P.ad.tick();
   const delta = audio.currentTime - P.last;
   P.last = audio.currentTime;
@@ -290,9 +323,10 @@ audio.addEventListener('timeupdate', () => {
   prepareNext();
   paintTime();
   lockFrame();
+  if (performance.now() - savedAt > 5000) saveListening();
 });
-audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); syncLockClock(); });
-audio.addEventListener('pause', () => { syncPlayer(); wakeLogo(); lockFrame(true); syncLockClock(); });
+audio.addEventListener('play', () => { syncPlayer(); wakeLogo(); });
+audio.addEventListener('pause', () => { saveListening(); syncPlayer(); wakeLogo(); lockFrame(true); });
 audio.addEventListener('error', () => {
   if (P.ad || !P.track || audio.src === SILENT) return;
   // Usually an expired link after a long pause: fetch a fresh one once and resume in place.
@@ -304,6 +338,7 @@ audio.addEventListener('playing', () => { P.retried = false; });
 audio.addEventListener('durationchange', () => syncPosition());
 
 function syncPosition() {
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
   try { if (isFinite(audio.duration)) navigator.mediaSession?.setPositionState({ duration: audio.duration, position: Math.min(audio.currentTime, audio.duration), playbackRate: audio.playbackRate }); } catch { /* older iOS */ }
 }
 function syncMediaSession() {
@@ -312,8 +347,8 @@ function syncMediaSession() {
   if ('mediaSession' in navigator) {
     const art = t.cover ? [{ src: new URL(t.cover, location.href).href, sizes: '512x512' }] : [{ src: '/icon-512.png', sizes: '512x512', type: 'image/png' }];
     navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: art });
-    navigator.mediaSession.setActionHandler('play', toggle);
-    navigator.mediaSession.setActionHandler('pause', toggle);
+    navigator.mediaSession.setActionHandler('play', resumePlay);
+    navigator.mediaSession.setActionHandler('pause', pausePlay);
     navigator.mediaSession.setActionHandler('nexttrack', P_next);
     navigator.mediaSession.setActionHandler('previoustrack', P_prev);
     try { navigator.mediaSession.setActionHandler('seekto', e => { audio.currentTime = e.seekTime ?? 0; syncPosition(); }); } catch { /* older iOS */ }
@@ -322,25 +357,26 @@ function syncMediaSession() {
 function syncNative() {
   win.RythmNative?.updateMedia?.(JSON.stringify({ title: P.track?.title || '', artist: P.track?.artist || '', cover: P.track?.cover ? new URL(P.track.cover, location.href).href : '', playing: !audio.paused }));
 }
-const CMDS: Record<string, () => unknown> = { play: toggle, pause: toggle, next: P_next, prev: P_prev };
+const CMDS: Record<string, () => unknown> = { play: resumePlay, pause: pausePlay, next: P_next, prev: P_prev };
 win.__nativeCmd = (c: string) => CMDS[c]?.();
 
 function paintTime() {
   const d = audio.duration && isFinite(audio.duration) ? audio.duration : P.track?.duration || 0;
-  const pct = d ? (audio.currentTime / d) * 100 : 0;
+  const pos = P.resume ?? audio.currentTime;
+  const pct = d ? (pos / d) * 100 : 0;
   if (ui.thin) ui.thin.style.width = `${pct}%`;
   for (const s of document.querySelectorAll<HTMLInputElement>('[data-seek]')) {
     if (s.dataset.drag) continue;
-    s.max = String(d || 1); s.value = String(audio.currentTime); s.style.setProperty('--p', `${pct}%`);
+    s.max = String(d || 1); s.value = String(pos); s.style.setProperty('--p', `${pct}%`);
   }
-  for (const e of document.querySelectorAll('[data-cur]')) e.textContent = fmt(audio.currentTime);
+  for (const e of document.querySelectorAll('[data-cur]')) e.textContent = fmt(pos);
   for (const e of document.querySelectorAll('[data-dur]')) e.textContent = fmt(d);
 }
 function seekBar() {
   const s = h('input', { type: 'range', min: 0, max: 1, step: 'any', value: 0, 'data-seek': '1', 'aria-label': 'Qo\'shiq vaqti' });
   s.addEventListener('pointerdown', () => { s.dataset.drag = '1'; });
   s.addEventListener('input', () => { s.dataset.drag = '1'; s.style.setProperty('--p', `${(Number(s.value) / (Number(s.max) || 1)) * 100}%`); });
-  s.addEventListener('change', () => { audio.currentTime = Number(s.value); delete s.dataset.drag; P.last = audio.currentTime; });
+  s.addEventListener('change', () => { if (P.resume !== null) P.resume = Number(s.value); else audio.currentTime = Number(s.value); delete s.dataset.drag; P.last = Number(s.value); saveListening(); });
   return s;
 }
 const quality = (t: Track): string => `WAV · ${t.bitDepth}-bit · ${(t.sampleRate / 1000).toFixed(t.sampleRate % 1000 ? 1 : 0)} kHz`;
@@ -485,31 +521,18 @@ function logoFrame(now: number): void {
   }
   logoRaf = moving ? requestAnimationFrame(logoFrame) : 0;
 }
-// Lock screen: the OS only takes still pictures, so the logo is redrawn from the beat map, aiming at 30 pictures a second. What the phone really accepts is measured below.
-// Songs with their own cover keep it. shortcut: frame swapping, a truly smooth animated cover needs a native app.
+// Lock screen: the OS only takes still pictures and blanks the old one while loading the next, so frames must stay far apart.
+// Songs with their own cover keep it. shortcut: 3 pictures a second is the ceiling here, smooth motion needs a native app.
+const LOCK_MS = 333;
 const lockCanvas = document.createElement('canvas');
-lockCanvas.width = lockCanvas.height = 192; // small enough to encode inside a 33 ms frame
+lockCanvas.width = lockCanvas.height = 192;
 const lockH = LOGO_REST.slice();
-let lockLast = 0, lockFrameNo = -1, lockCount = 0, lockSince = 0;
-let lockClock: Worker | null = null;
-// Runs only while the screen is off and music plays, so it costs nothing otherwise.
-function syncLockClock(): void {
-  const want = document.hidden && !audio.paused && !!P.track && !P.track.cover && !P.ad;
-  if (want && !lockClock) {
-    try { lockClock = new Worker('/tick.js'); lockClock.onmessage = () => lockFrame(); lockCount = 0; lockSince = performance.now(); } catch { lockClock = null; }
-  } else if (!want && lockClock) {
-    lockClock.terminate(); lockClock = null;
-    const secs = (performance.now() - lockSince) / 1000;
-    if (secs > 3) try { localStorage.setItem('lock-fps', (lockCount / secs).toFixed(1)); } catch { /* private mode */ }
-  }
-}
-document.addEventListener('visibilitychange', () => syncLockClock());
+let lockLast = 0, lockFrameNo = -1;
 function lockFrame(force = false): void {
   const t = P.track, now = performance.now();
-  if (!t || t.cover || P.ad || !document.hidden || !('mediaSession' in navigator) || (!force && now - lockLast < 30) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!t || t.cover || P.ad || !document.hidden || !('mediaSession' in navigator) || (!force && now - lockLast < LOCK_MS) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const dt = Math.min(500, now - lockLast);
   lockLast = now;
-  lockCount++;
   const c = lockCanvas.getContext('2d');
   if (!c) return;
   c.setTransform(0.75, 0, 0, 0.75, 0, 0); // drawing stays in 256 units
@@ -533,8 +556,10 @@ function lockFrame(force = false): void {
     c.roundRect((96 + i * 74) / 2, 128 - h / 2, 22, h, 11);
     c.fill();
   });
-  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: [{ src: lockCanvas.toDataURL('image/png'), sizes: '192x192', type: 'image/png' }] });
-  syncPosition();
+  const artwork = [{ src: lockCanvas.toDataURL('image/png'), sizes: '192x192', type: 'image/png' }];
+  // Changing only the picture keeps the title and controls from being rebuilt on every frame.
+  const m = navigator.mediaSession.metadata;
+  if (m) m.artwork = artwork; else navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork });
 }
 function wakeLogo(): void {
   if (logoRaf || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -812,7 +837,6 @@ const V: Record<string, View> = {
         h('div', null, h('button', { class: 'btn pri', onclick: () => playList(d.promoted, 0) }, icon('play', 18), 'Tinglash'))),
       cover(hero.cover, hero.title)));
     else if (!d.fresh.length) el.append(h('section', { class: 'hero' }, h('div', { class: 'stack' }, h('h2', null, S.settings.heroTitle), h('p', { class: 'muted' }, S.settings.heroSub))));
-    if (d.recent.length) el.append(h('section', { class: 'quick' }, d.recent.slice(0, 6).map((t: Row, i: number) => h('button', { class: 'qt', onclick: () => playList(d.recent, i) }, cover(t.cover, t.title), h('span', { class: 'clip' }, t.title)))));
     if (free) el.append(upsell());
     if (d.genres.length) el.append(h('div', { class: 'pill-row' }, d.genres.map((g: string) => h('a', { class: 'pill', href: `/genre/${encodeURIComponent(g)}` }, g))));
     const top = d.popular.slice(0, 5);
@@ -833,7 +857,13 @@ const V: Record<string, View> = {
     let timer: ReturnType<typeof setTimeout> | undefined, seq = 0;
     const runIt = async () => {
       const s = ++seq, term = q.value.trim();
-      if (!term) { results.replaceChildren(); return; }
+      if (!term) {
+        history.replaceState(null, '', '/search');
+        const all = await api('/api/catalog').catch(() => null);
+        if (s !== seq) return;
+        results.replaceChildren(all?.tracks.length ? h('section', { class: 'section' }, h('h2', null, 'Barcha qo\'shiqlar'), trackList(all.tracks)) : empty('Hozircha qo\'shiqlar yo\'q.'));
+        return;
+      }
       history.replaceState(null, '', `/search?q=${encodeURIComponent(term)}`);
       try {
         const d = await api(`/api/search?q=${encodeURIComponent(term)}`);
@@ -847,7 +877,7 @@ const V: Record<string, View> = {
     };
     q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(runIt, 250); });
     el.append(h('h1', null, 'Qidiruv'), q, results);
-    if (q.value) runIt();
+    await runIt();
   },
   async library(el) {
     await loadLibrary();
@@ -913,7 +943,7 @@ const V: Record<string, View> = {
     const probe = h('div', { style: 'position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)' });
     document.body.append(probe);
     const inset = getComputedStyle(probe);
-    const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${nav.standalone === true} | qulf kadri ${(() => { try { return localStorage.getItem('lock-fps') || '-'; } catch { return '-'; } })()}/s`;
+    const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${nav.standalone === true}`;
     probe.remove();
     el.append(...nodes([h('h1', null, 'Akkaunt'),
       h('form', { class: 'panel', onsubmit: guard(async (ev: Event) => { ev.preventDefault(); await api('/api/me', { method: 'PATCH', body: { name: name.value } }); u.name = name.value; toast('Saqlandi'); }) },
@@ -926,7 +956,7 @@ const V: Record<string, View> = {
         h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
         u.role === 'admin' ? h('a', { class: 'btn pri', href: '/admin' }, 'Admin panel') : null,
         S.settings.supportUrl ? h('a', { class: 'btn', href: S.settings.supportUrl, target: '_blank', rel: 'noopener' }, 'Yordam') : null,
-        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))]));
+        h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); try { localStorage.removeItem('listening'); } catch { /* private mode */ } audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))]));
   },
   async install(el) {
     const ua = navigator.userAgent, iOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), android = /Android/.test(ua);
@@ -939,7 +969,7 @@ const V: Record<string, View> = {
     const apk = h('div', { class: 'panel' }, h('h2', null, 'Android'),
       release ? h('p', { class: 'muted' }, `Versiya ${release.versionName} · ${(release.size / 1048576).toFixed(1)} MB. Play Market kerak emas, yangilanishlar ilovaning o'zida chiqadi.`) : h('p', { class: 'muted' }, 'APK hali joylanmagan.'),
       release ? h('a', { class: 'btn pri', href: '/dl/android', download: '' }, 'APK yuklab olish') : null);
-    el.append(h('h1', null, 'Ilovani o\'rnatish'), h('div', { class: 'two' }, android ? [apk, ios] : iOS ? [ios, apk] : [ios, apk]));
+    el.append(h('h1', null, 'Ilovani o\'rnatish'), h('div', { class: 'two' }, android ? [apk, ios] : [ios, apk]), S.user ? '' : h('a', { class: 'btn', href: '/' }, 'Kirish sahifasiga qaytish'));
   },
 };
 function newPlaylist() {
@@ -1012,7 +1042,11 @@ function authView() {
       mode === 'login' ? null : h('label', { class: 'f' }, 'Ism', name),
       h('label', { class: 'f' }, 'Email', email), h('label', { class: 'f' }, 'Parol', pass), err, submit,
       h('button', { type: 'button', class: 'btn full', onclick: () => { mode = mode === 'login' ? 'register' : 'login'; draw(); } }, mode === 'login' ? 'Akkaunt yaratish' : 'Menda akkaunt bor'),
-      h('a', { class: 'small muted', style: 'text-align:center', href: '/install' }, 'Ilovani o\'rnatish')));
+      h('div', { class: 'auth-apps' }, h('p', { class: 'small muted' }, 'Ilovani akkauntsiz yuklab oling'),
+        h('div', { class: 'row' },
+          h('a', { class: 'btn sm grow', href: '/dl/ios.mobileconfig', download: '' }, 'iPhone'),
+          h('a', { class: 'btn sm grow', href: '/dl/android', download: '' }, 'Android APK')),
+        h('a', { class: 'small muted', href: '/install' }, 'O\'rnatish yo\'riqnomasi'))));
   };
   draw();
   return box;
@@ -1111,6 +1145,7 @@ async function route(quiet = false): Promise<void> {
   const seq = ++routeSeq;
   const parts = location.pathname.split('/').filter(Boolean);
   const name = parts[0] || 'home';
+  if (!S.user && name !== 'install') { mainEl = null; render(); return; } // the install guide is the only page open without an account
   for (const a of document.querySelectorAll<HTMLElement>('[data-nav]')) {
     const href = a.dataset.nav as string;
     a.classList.toggle('on', href === '/' ? !parts.length : location.pathname.startsWith(href));
@@ -1155,13 +1190,22 @@ async function checkUpdate() {
 
 navigator.serviceWorker?.register('/sw.js').catch(() => {});
 
+// /?play=name is what an Apple Shortcut opens from a Siri phrase. The link survives sign-in because it leaves the address only once handled.
+async function playFromLink(): Promise<void> {
+  const q = new URLSearchParams(location.search).get('play')?.trim();
+  if (!q || !S.user) return;
+  history.replaceState(null, '', location.pathname);
+  const d = await api(`/api/search?q=${encodeURIComponent(q)}`).catch(() => null);
+  if (d?.tracks?.length) playList(d.tracks, 0); else toast(`"${q}" topilmadi`);
+}
 async function boot(): Promise<void> {
   const d = await api('/api/me');
   S.user = d.user; S.settings = d.settings;
   document.title = d.settings.siteName;
   const lib = S.user ? await api('/api/library').catch(() => null) : null;
   if (lib) { S.liked = new Set(lib.liked); S.playlists = lib.playlists; }
+  if (S.user) restoreListening();
   render();
-  if (S.user) { checkUpdate(); setTimeout(loadAllPages, 300); }
+  if (S.user) { checkUpdate(); setTimeout(loadAllPages, 300); playFromLink(); }
 }
 boot().catch((e: Error) => root.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'panel' }, h('p', { class: 'err' }, e.message), h('button', { class: 'btn', onclick: () => location.reload() }, 'Qayta urinish')))));

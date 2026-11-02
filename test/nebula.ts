@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 const OUT = process.argv[2] || 'dist/shots', name = process.argv[3] || 'chromium';
 const b = await (name === 'webkit' ? webkit : chromium).launch(name === 'chromium' ? { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] } : {});
 const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as any).__a = this; return play.apply(this, arguments as any); }; });
 const errs = []; p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error' && !/fonts\.g/.test(m.text())) errs.push(m.text()); });
 await p.goto('http://127.0.0.1:8787');
 await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
@@ -73,7 +74,9 @@ if (name === 'chromium') { // real touch events, which WebKit in Playwright cann
   for (let y = 740; y >= 300; y -= 40) { await touch('touchMove', y); await p.waitForTimeout(25); }
   await p.waitForTimeout(200);
   await p.screenshot({ path: `${OUT}/queue-open-${name}.png` });
-  await touch('touchEnd'); await p.waitForTimeout(600);
+  await touch('touchEnd');
+  for (let i = 0; i < 20 && !(await p.evaluate(() => (document.querySelector('.now') as HTMLElement).style.getPropertyValue('--q') === '1.0000')); i++) await p.waitForTimeout(250); // software GL delays input here
+  await p.waitForTimeout(600);
   assert.equal(await opened(), true, 'touch drag must open');
   console.log('  ok touch swipe opens the sheet');
   await p.mouse.click(195, 70); await p.waitForTimeout(500);
@@ -101,6 +104,11 @@ await p.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
 const fresh = await b.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' }); // network stubs cannot see through a service worker in WebKit
 const q = await fresh.newPage();
 await q.goto('http://127.0.0.1:8787/');
+await q.getByRole('link', { name: 'Android APK' }).waitFor({ timeout: 8000 });
+assert.equal(await q.getByRole('link', { name: 'iPhone' }).getAttribute('href'), '/dl/ios.mobileconfig');
+await q.getByRole('link', { name: "O'rnatish yo'riqnomasi" }).click(); await q.getByRole('heading', { name: "Ilovani o'rnatish" }).waitFor({ timeout: 8000 });
+await q.getByRole('link', { name: 'Kirish sahifasiga qaytish' }).click(); await q.getByRole('button', { name: 'Kirish', exact: true }).waitFor({ timeout: 8000 });
+console.log('  ok apps can be downloaded without signing in');
 await q.evaluate(async email => { await fetch('/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Yangi', email, password: 'parol12345' }) }); }, `spot${Date.now()}@test.uz`);
 const newest = await q.evaluate(async () => (await (await fetch('/api/home')).json()).fresh[0]);
 if (Date.now() / 1000 - newest.createdAt < 7 * 86400) {
@@ -134,6 +142,41 @@ await fresh.close();
 await p.goto('http://127.0.0.1:8787/');
 await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
 await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+// Search opens with the songs already listed; typing filters; clearing brings them back.
+await p.goto('http://127.0.0.1:8787/search'); await p.waitForSelector('.list .tr');
+const allRows = await p.locator('.list .tr').count(); assert.ok(allRows >= 2, `search page empty: ${allRows}`);
+await p.getByLabel('Qidiruv').fill('zzzqqq'); await p.getByText('topilmadi').waitFor({ timeout: 5000 });
+await p.getByLabel('Qidiruv').fill(''); await p.waitForSelector('.list .tr');
+assert.equal(await p.locator('.list .tr').count(), allRows);
+assert.equal(await p.locator('.quick, .qt').count(), 0);
+console.log('  ok search lists all songs by default');
+// Reopening: same song, same second, silent until the listener presses play.
+await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+await p.locator('.card').first().click(); await p.waitForSelector('.player.show'); await p.waitForTimeout(1500);
+const songTitle = await p.locator('.player .info .clip').first().textContent();
+await p.evaluate(() => { const a = (window as any).__a; a.currentTime = 25; }); await p.waitForTimeout(1200);
+await p.reload(); await p.waitForSelector('.player.show'); await p.waitForTimeout(600);
+assert.equal(await p.locator('.player .info .clip').first().textContent(), songTitle);
+await p.locator('.player .info').click(); await p.waitForSelector('.now.show');
+const shownAt = await p.evaluate(() => document.querySelector('.now [data-cur]').textContent);
+assert.match(shownAt, /^0:2[5-9]$/, `reopened at ${shownAt}`);
+await p.waitForTimeout(1500);
+assert.equal(await p.locator('.player .info .clip').first().textContent(), songTitle, 'the unlock clip must not skip the song');
+assert.equal(await p.evaluate(() => { const a = (window as any).__a; return !!a && !a.paused && a.src.includes('/media/'); }), false, 'must not play by itself');
+await p.getByRole('button', { name: 'Yopish' }).click(); await p.waitForTimeout(500);
+await p.locator('.player .playbtn').first().click(); await p.waitForTimeout(3000);
+const resumed = await p.evaluate(() => { const a = (window as any).__a; return { t: a.currentTime, paused: a.paused, src: a.src.slice(0, 30) }; });
+assert.ok(resumed.t >= 25 && resumed.t < 40 && !resumed.paused, `resume failed: ${JSON.stringify(resumed)}`);
+await p.locator('.player .playbtn').first().click();
+console.log('  ok reopening keeps the song and second, resumes on play');
+// Voice shortcut link: finds the song, starts it, and cleans the address.
+const wanted = await p.evaluate(async () => (await (await fetch('/api/home')).json()).fresh[0].title);
+await p.goto(`http://127.0.0.1:8787/?play=${encodeURIComponent(wanted)}`); await p.waitForSelector('.player.show');
+await p.locator('.player .info .clip', { hasText: wanted }).first().waitFor({ timeout: 8000 });
+assert.ok(!p.url().includes('play='), 'the link must not replay on reload');
+await p.locator('.player .playbtn').first().click();
+await p.goto('http://127.0.0.1:8787/?play=yoqqoshiqzzz'); await p.getByText('topilmadi').waitFor({ timeout: 5000 });
+console.log('  ok voice link plays the match, reports no match');
 // Pressing a card must not redraw the page, which is what made its badge flicker.
 await p.setViewportSize({ width: 390, height: 844 });
 await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card'); await p.waitForTimeout(1500);

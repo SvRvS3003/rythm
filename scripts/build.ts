@@ -8,7 +8,6 @@ const OUT = 'dist/web';
 rmSync(OUT, { recursive: true, force: true });
 cpSync('web', OUT, { recursive: true });
 await build({ entryPoints: ['client/app.ts'], outdir: OUT, bundle: true, splitting: true, format: 'esm', minify: true, target: ['safari15', 'chrome90'], chunkNames: 'chunks/[name]-[hash]', logLevel: 'warning' });
-await build({ entryPoints: ['client/tick.ts'], outfile: `${OUT}/tick.js`, minify: true, target: 'es2020', logLevel: 'warning' });
 // The worker's file list and version come from the finished output, so a new build replaces the app atomically.
 const walk = (d: string): string[] => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : [p]; });
 const files = walk(OUT).filter(f => !f.endsWith('_headers'));

@@ -239,11 +239,12 @@ route('GET', '/api/home', async (req, env, { user }) => {
     return { promoted, fresh, popular, albums: albums.map(mapAlbum), artists: artists.map(mapArtist), genres: genres.map(g => g.genre), editorial };
   };
   // The admin sees a new upload at once; listeners within 30 s.
-  const [shared, recent] = await Promise.all([
-    user.role === 'admin' ? loadShared() : memo('home', 30, loadShared),
-    tracks(env, 'WHERE t.published=1 AND t.id IN (SELECT track_id FROM plays WHERE user_id=? ORDER BY started_at DESC LIMIT 40) LIMIT 8', user.id),
-  ]);
-  return json({ ...shared, recent });
+  return json(user.role === 'admin' ? await loadShared() : await memo('home', 30, loadShared));
+});
+
+route('GET', '/api/catalog', async (req, env, { user }) => {
+  const load = () => tracks(env, 'WHERE t.published=1 ORDER BY t.created_at DESC LIMIT 200');
+  return json({ tracks: user.role === 'admin' ? await load() : await memo('catalog', 30, load) });
 });
 
 route('GET', '/api/search', async (req, env) => {
