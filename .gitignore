@@ -10,3 +10,4 @@ android/keystore.properties
 dist/
 .prod.vars
 .playwright-mcp/
+.DS_Store
