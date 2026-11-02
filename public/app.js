@@ -13,6 +13,8 @@ export function h(tag, attrs, ...kids) {
   for (const c of kids.flat(Infinity)) if (c !== null && c !== undefined && c !== false) el.append(c.nodeType ? c : String(c));
   return el;
 }
+// iPadOS Safari reports itself as a Mac, so touch points tell them apart.
+if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) document.documentElement.classList.add('ios');
 const I = {
   home: 'M3 11l9-8 9 8v10h-6v-6H9v6H3z', search: 'M10.5 3a7.5 7.5 0 015.9 12.1l4.8 4.8-1.4 1.4-4.8-4.8A7.5 7.5 0 1110.5 3zm0 2a5.5 5.5 0 100 11 5.5 5.5 0 000-11z',
   lib: 'M4 3h2v18H4zM9 3h2v18H9zM14.5 3.5l2-.5 4 17-2 .5z', star: 'M12 2l3 6.6 7 .8-5.2 4.7 1.5 7L12 17l-6.3 3.1 1.5-7L2 9.4l7-.8z',
@@ -275,6 +277,7 @@ function renderNow(mode) {
   if (!t) return closeNow();
   if (mode) ui.nowMode = mode;
   const m = ui.nowMode || 'art';
+  ui.now.style.setProperty('--art', t.cover ? `url("${t.cover}")` : 'none');
   const left = m === 'lyrics' ? h('div', { class: 'lyrics', id: 'lyr' }, 'Yuklanmoqda…')
     : m === 'queue' ? h('div', { class: 'list' }, P.queue.slice(P.i, P.i + 30).map((q, n) => h('button', { class: 'tr', style: 'margin:0;width:100%', 'data-id': q.id, onclick: () => loadAt(P.i + n) }, cover(q.cover, q.title), h('div', { class: 'grow', style: 'text-align:left' }, h('div', { class: 'clip t' }, q.title), h('div', { class: 'clip s' }, q.artist)))))
     : cover(t.cover, t.title, 'art');
