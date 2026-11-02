@@ -117,10 +117,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 .tr .n .eq { display: none; height: 14px; align-items: flex-end; justify-content: center; gap: 2px; }
 .tr.cur .n span { display: none; }
 .tr.cur .n .eq { display: flex; }
-.eq b { display: block; width: 3px; height: 30%; border-radius: 2px; background: var(--a2); }
-html.playing .eq b { animation: eq .9s ease-in-out infinite alternate; }
-.eq b:nth-child(2) { animation-delay: -.3s !important; }
-.eq b:nth-child(3) { animation-delay: -.6s !important; }
+.eq b { display: block; width: 3px; height: 18%; border-radius: 2px; background: var(--a2); }
 
 /* page header */
 .head { display: flex; flex-direction: column; gap: 16px; align-items: flex-start; min-width: 0; }
@@ -294,7 +291,6 @@ html.ios .player .cover { border-radius: 16px; } /* follows the capsule: its 24 
 .auth-apps .row { width: 100%; }
 /* motion */
 .view.quiet > * { animation: none; }
-@keyframes eq { from { height: 25%; } to { height: 100%; } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes sheetUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes nowUp { from { transform: translateY(100%); } to { transform: none; } }

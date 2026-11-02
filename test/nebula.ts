@@ -19,6 +19,17 @@ await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.vi
 const size = await p.evaluate(() => { const c = document.querySelector<HTMLCanvasElement>('.nebula'); return [c.width, c.height, c.getBoundingClientRect().height]; });
 assert.ok(size[0] >= 195 && size[1] >= 422, `canvas not sized ${size}`);
 assert.equal(size[2], 844, 'backdrop must cover the screen');
+// The backdrop moves only with real sound: paused it fades and stops, playing it moves again.
+const shot = async () => { await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.visibility = 'hidden'; }); const s = await p.screenshot(); await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.visibility = ''; }); return s; };
+const a0 = await shot(); await p.waitForTimeout(700); const a1 = await shot();
+assert.notEqual(Buffer.compare(a0, a1), 0, 'backdrop must move while playing');
+await p.locator('.now .playbtn').click(); await p.waitForTimeout(9000);
+const s0 = await shot(); await p.waitForTimeout(1500); const s1 = await shot();
+assert.equal(Buffer.compare(s0, s1), 0, 'backdrop must stand still while paused');
+await p.locator('.now .playbtn').click(); await p.waitForTimeout(2500);
+const m0 = await shot(); await p.waitForTimeout(700); const m1 = await shot();
+assert.notEqual(Buffer.compare(m0, m1), 0, 'backdrop must move again after play');
+console.log('  ok backdrop moves only while sound plays');
 // Queue sheet follows the drag, and speed or distance decide where it lands.
 const sheetTop = () => p.evaluate(() => document.querySelector('.q-sheet').getBoundingClientRect().top);
 const opened = () => p.evaluate(() => { const s = document.querySelector('.q-sheet'); const r = s.getBoundingClientRect(); return getComputedStyle(s).display !== 'none' && r.top < innerHeight - r.height * 0.95; });
@@ -83,13 +94,41 @@ if (name === 'chromium') { // real touch events, which WebKit in Playwright cann
 }
 await p.getByRole('button', { name: 'Yopish' }).click();
 assert.deepEqual(errs, []);
+// Row bars: driven by this song's map, each bar its own band, flat without sound.
+{
+  await p.setViewportSize({ width: 390, height: 844 });
+  await p.goto('http://127.0.0.1:8787/search'); await p.waitForSelector('.list .tr');
+  const song = await p.evaluate(async () => { const { tracks } = await (await fetch('/api/catalog')).json(); return tracks[0]; });
+  await p.evaluate(async s => { // low band follows even seconds, high band odd seconds, middle stays silent
+    const frames = Math.floor(s.duration * 20), map = new Uint8Array(frames * 16);
+    for (let f = 0; f < frames; f++) { const even = Math.floor(f / 20) % 2 === 0; if (even) map[f * 16 + 1] = 255; else map[f * 16 + 12] = 255; }
+    await fetch(`/api/admin/tracks/${s.id}/rhythm`, { method: 'PUT', body: map });
+  }, song);
+  await p.goto('http://127.0.0.1:8787/search'); await p.waitForSelector('.list .tr');
+  await p.locator(`.tr[data-id="${song.id}"] .hit`).first().click(); await p.waitForSelector('.player.show'); await p.waitForTimeout(1500);
+  const bars = () => p.evaluate(() => { const a = (window as any).__a, pos = a.currentTime, h = [...document.querySelectorAll<HTMLElement>('.tr.cur .eq b')].map(b => parseFloat(b.style.height) || 0); return { pos, h, sounding: !a.paused }; });
+  const low: number[] = [], high: number[] = [], mid: number[] = [];
+  for (let i = 0; i < 24; i++) { await p.waitForTimeout(220); const s = await bars(); const fr = s.pos % 2; mid.push(s.h[1]); if (fr > 0.6 && fr < 0.95) { low.push(s.h[0]); } if (fr > 1.6 && fr < 1.95) { high.push(s.h[2]); } }
+  const avg = (l: number[]) => l.reduce((x, y) => x + y, 0) / (l.length || 1);
+  assert.ok(avg(low) > 60, `low bar ignored its band: ${avg(low).toFixed(0)}`);
+  assert.ok(avg(high) > 60, `high bar ignored its band: ${avg(high).toFixed(0)}`);
+  assert.ok(Math.max(...mid) < 30, `middle bar moved without its band: ${Math.max(...mid).toFixed(0)}`);
+  await p.locator('.player .playbtn').first().click(); await p.waitForTimeout(1500);
+  const a1 = (await bars()).h; await p.waitForTimeout(700); const a2 = (await bars()).h;
+  assert.deepEqual(a1, a2, 'bars must not move while paused');
+  assert.ok(a1.every(v => v < 25), `bars must settle low: ${a1}`);
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector('.tr.cur .eq b')).animationName), 'none');
+  console.log('  ok row bars follow their own bands and rest without sound');
+  await p.evaluate(() => { localStorage.removeItem('listening'); });
+}
 // Logo: moves with the music without jumps, and eases back to its exact resting shape after pause.
 await p.setViewportSize({ width: 1200, height: 800 });
 await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
 const REST = [80, 220, 320, 160, 60];
 const bars = () => p.evaluate(() => [...document.querySelector('.side .logo-mark g').children].map(r => Number(r.getAttribute('height'))));
 assert.deepEqual(await bars(), REST, 'logo must start in its resting shape');
-await p.locator('.card').first().click(); await p.waitForTimeout(600);
+await p.locator('.tabs a, .side a', { hasText: 'Qidiruv' }).first().click(); await p.waitForSelector('.list .tr'); // the first listed song has a beat map from the check above
+await p.locator('.list .tr .hit').first().click(); await p.waitForTimeout(1500);
 const trace = await p.evaluate(() => new Promise<number[][]>(res => { const out: number[][] = []; const t0 = performance.now(); const f = () => { out.push([...document.querySelector('.side .logo-mark g').children].map(r => Number(r.getAttribute('height')))); performance.now() - t0 < 2500 ? requestAnimationFrame(f) : res(out); }; f(); }));
 const moved = trace.some(fr => fr.some((v, i) => Math.abs(v - REST[i]) > 20));
 assert.ok(moved, 'logo did not react while playing');

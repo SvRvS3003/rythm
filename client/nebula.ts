@@ -91,13 +91,13 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  let raf = 0, last = 0, level = 0, stopped = false, hit = 0, quality = 1, slow = 0;
-  const t0 = performance.now();
+  let raf = 0, last = 0, level = 0, stopped = false, hit = 0, quality = 1, slow = 0, t = 0, idle = 0;
   const frame = (now: number): void => {
     if (stopped) return;
     raf = requestAnimationFrame(frame);
     if (now - last < 32) return; // 30 fps keeps the phone cool while music plays
     // Sharp at the screen's real pixels; only a phone that cannot keep up steps down, one notch at a time.
+    const dtFrame = Math.min(100, now - last);
     slow = now - last > 48 ? slow + 1 : Math.max(0, slow - 1);
     if (slow > 20 && quality > 0.5) { quality -= 0.125; slow = 0; }
     last = now;
@@ -105,19 +105,24 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
     const scale = dpr * quality * Math.min(1, 1600 / (Math.max(innerWidth, innerHeight) * dpr));
     const w = Math.round(innerWidth * scale), h = Math.round(innerHeight * scale);
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    const t = (now - t0) / 1000;
-    level += ((isPlaying() ? 1 : 0.08) - level) * 0.04;
+    const playing = isPlaying();
+    level += ((playing ? 1 : 0) - level) * (playing ? 0.08 : 0.05); // eases in and out, never snaps
+    // Motion runs on its own clock that slows with the music and stops with it.
+    t += (dtFrame / 1000) * level;
+    idle = playing || level > 0.01 ? 0 : idle + 1;
+    if (idle > 150) return; // the picture has faded out, so nothing is drawn until sound returns
     const real = readRhythm(bins);
     let energy: number;
     if (real !== null) {
       hit = Math.max(hit + (real - hit) * 0.5, hit * 0.82); // sharp attack, soft release, like a meter
       energy = hit;
     } else {
+      // A song without a map gets a calm pulse, but only while it is really playing.
       const beat = Math.pow(Math.max(0, Math.sin(t * 3.7)), 8);
       for (let i = 0; i < BINS; i++) {
         const m = Math.min(i, BINS - i) / (BINS / 2);
         const wave = 0.5 + 0.5 * Math.sin(i * 0.61 + t * 2.3) * Math.sin(i * 0.23 - t * 1.1);
-        bins[i] = 255 * level * Math.min(1, Math.pow(wave, 2.2) * (0.6 + 0.7 * beat * (1 - m * 0.6)));
+        bins[i] = playing ? 255 * level * Math.min(1, Math.pow(wave, 2.2) * (0.6 + 0.7 * beat * (1 - m * 0.6))) : 0;
       }
       energy = level * (0.4 + 0.6 * beat);
       hit *= 0.9;

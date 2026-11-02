@@ -334,7 +334,8 @@ audio.addEventListener('error', () => {
   toast('Qo\'shiqni ochib bo\'lmadi. Internetni tekshiring.');
   syncPlayer();
 });
-audio.addEventListener('playing', () => { P.retried = false; });
+audio.addEventListener('playing', () => { P.retried = false; wakeLogo(); syncPlayer(); });
+audio.addEventListener('waiting', () => { wakeLogo(); syncPlayer(); });
 audio.addEventListener('durationchange', () => syncPosition());
 
 function syncPosition() {
@@ -402,7 +403,7 @@ function playerBar() {
 function syncPlayer() {
   syncNative();
   syncPosition();
-  document.documentElement.classList.toggle('playing', !audio.paused);
+  document.documentElement.classList.toggle('playing', sounding());
   const el = ui.player;
   if (!el) return;
   const t = P.track;
@@ -473,7 +474,7 @@ function loadRhythm(): void {
 // Fills bins with the spectrum at the exact playback position and returns the bass hit, or null when the song has no map.
 function readRhythm(bins: Uint8Array): number | null {
   const d = beat.data;
-  if (!d || audio.paused) return null;
+  if (!d || !sounding()) return null;
   const f = Math.floor(audio.currentTime * FPS) * BANDS;
   if (f + BANDS > d.length) return null;
   for (let i = 0; i < bins.length; i++) {
@@ -486,6 +487,8 @@ function readRhythm(bins: Uint8Array): number | null {
   return Math.min(1, (bass / 1020) * 0.7 + (rise / 510));
 }
 // Logo: each of the 5 bars follows one frequency range of the playing song and eases back to the resting logo shape.
+// True only while sound really comes out: not paused, not buffering, not the silent unlock clip, not an ad.
+const sounding = (): boolean => !audio.paused && !audio.seeking && audio.readyState >= 3 && audio.src !== SILENT && !P.ad && !!P.track && P.resume === null;
 const LOGO_REST = [80, 220, 320, 160, 60], LOGO_BANDS = [0, 3, 7, 10, 14];
 const LOGO_SVG = `<svg viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="logo-g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="512" y2="512"><stop offset="0" stop-color="#ff4d2e"/><stop offset="1" stop-color="#ffb02e"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="#0b0a0d"/><g fill="url(#logo-g)">${LOGO_REST.map((r, i) => `<rect x="${96 + i * 74}" y="${256 - r / 2}" width="44" height="${r}" rx="22"/>`).join('')}</g></svg>`;
 const logoH = LOGO_REST.slice();
@@ -495,21 +498,30 @@ function logoMark(cls = ''): HTMLElement {
   el.innerHTML = LOGO_SVG; // constant markup, no user data
   return el;
 }
-function logoTargets(t: number): number[] {
-  if (audio.paused || P.ad || !P.track) return LOGO_REST;
+function logoTargets(): number[] {
+  if (!sounding()) return LOGO_REST;
   const d = beat.data, f = Math.floor(audio.currentTime * FPS) * BANDS;
-  return LOGO_REST.map((_, i) => {
-    const v = d && f + BANDS <= d.length
-      ? d[f + LOGO_BANDS[i]] / 255
-      : 0.45 + 0.35 * Math.sin(t * (2.1 + i * 0.7) + i * 1.3); // songs without a map keep a calm pulse
-    return 56 + 380 * v;
-  });
+  if (!d || f + BANDS > d.length) return LOGO_REST;
+  return LOGO_BANDS.map(b => 56 + 380 * (d[f + b] / 255));
+}
+// The three bars beside the playing song: low, middle and high frequencies of this exact moment.
+const EQ_BANDS = [1, 6, 12], EQ_REST = 18;
+const eqH = [EQ_REST, EQ_REST, EQ_REST];
+function eqTargets(): number[] {
+  const d = beat.data, f = Math.floor(audio.currentTime * FPS) * BANDS;
+  if (!sounding() || !d || f + BANDS > d.length) return [EQ_REST, EQ_REST, EQ_REST];
+  return EQ_BANDS.map(b => EQ_REST + (100 - EQ_REST) * (d[f + b] / 255));
 }
 function logoFrame(now: number): void {
   const dt = Math.min(64, now - logoLast);
   logoLast = now;
-  const goal = logoTargets(now / 1000);
-  let moving = !audio.paused;
+  const goal = logoTargets(), eqGoal = eqTargets();
+  let moving = sounding();
+  eqGoal.forEach((v, i) => {
+    eqH[i] += (v - eqH[i]) * (1 - Math.exp(-dt / (v > eqH[i] ? 45 : 150)));
+    if (Math.abs(v - eqH[i]) > 0.5) moving = true;
+  });
+  for (const eq of document.querySelectorAll('.tr.cur .eq')) [...eq.children].forEach((b, i) => { (b as HTMLElement).style.height = `${eqH[i].toFixed(1)}%`; });
   for (let i = 0; i < logoH.length; i++) {
     // Quick rise and slow fall read as rhythm; both are eased, so nothing ever jumps.
     const k = 1 - Math.exp(-dt / (goal[i] > logoH[i] ? 55 : 170));
@@ -537,12 +549,12 @@ function lockFrame(force = false): void {
   if (!c) return;
   c.setTransform(0.75, 0, 0, 0.75, 0, 0); // drawing stays in 256 units
   // The map has 20 frames a second and this draws about 4, so each bar takes the loudest moment since the last picture: no hit is skipped.
-  const d = audio.paused ? null : beat.data, end = Math.floor(audio.currentTime * FPS);
+  const d = sounding() ? beat.data : null, end = Math.floor(audio.currentTime * FPS);
   const goal = d ? LOGO_REST.map((_, i) => {
     let peak = 0;
     for (let f = Math.max(lockFrameNo + 1, end - 8); f <= end; f++) { const at = f * BANDS + LOGO_BANDS[i]; if (at < d.length) peak = Math.max(peak, d[at]); }
     return 56 + 380 * (peak / 255);
-  }) : logoTargets(now / 1000);
+  }) : logoTargets();
   lockFrameNo = end;
   c.fillStyle = '#0b0a0d';
   c.fillRect(0, 0, 256, 256);
@@ -657,7 +669,7 @@ function openNow() {
   renderNow();
   ui.now?.classList.add('show');
   if (stopNebula || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  import('./nebula.ts').then(m => { if (ui.now?.classList.contains('show') && !stopNebula) stopNebula = m.startNebula(nebulaCanvas, () => !audio.paused, readRhythm); }).catch(() => {});
+  import('./nebula.ts').then(m => { if (ui.now?.classList.contains('show') && !stopNebula) stopNebula = m.startNebula(nebulaCanvas, sounding, readRhythm); }).catch(() => {});
   loadRhythm();
 }
 // Slides away instead of vanishing; the mini player underneath takes over.
