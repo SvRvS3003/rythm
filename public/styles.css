@@ -42,6 +42,14 @@ button:disabled { opacity: .45; cursor: default; }
 .tabs { grid-area: tabs; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: #0b0a0df2; border-top: 1px solid var(--line); padding: 0 var(--sar) var(--sab) var(--sal); }
 .tabs a { height: var(--tabs); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 11px; font-weight: 700; color: var(--t3); min-width: 0; }
 .tabs a.on { color: var(--t1); }
+.tabs { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.tabs a { position: relative; z-index: 1; -webkit-user-drag: none; transition: color .2s; }
+.tabs.held a.on:not(.hover) { color: var(--t3); }
+.tabs a.hover { color: var(--t1); }
+.tabs a svg { transition: transform .25s cubic-bezier(.3, 1.5, .5, 1); }
+.tabs a.on:not(.tabs.held a) svg, .tabs a.hover svg { transform: translateY(-1px) scale(1.08); }
+.tab-pill { position: absolute; left: 0; top: 0; border-radius: 26px; background: #ffffff1f; box-shadow: inset 0 1px 0 #ffffff33; transition: transform .32s cubic-bezier(.25, .9, .3, 1), width .2s; will-change: transform; pointer-events: none; }
+.tabs.held .tab-pill { transition: transform .14s ease-out; background: #ffffff33; }
 .logo { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; letter-spacing: -.02em; min-width: 0; }
 .logo img { width: 30px; height: 30px; border-radius: 8px; }
 
@@ -151,6 +159,8 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 .now .ctl { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .now .pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .quality { display: inline-flex; align-self: flex-start; padding: 3px 9px; border-radius: 6px; border: 1px solid #ffb02e66; color: var(--a2); font-size: 11px; font-weight: 800; letter-spacing: .03em; }
+.queue { flex: 1; min-height: 0; max-height: 46dvh; overflow: hidden auto; overscroll-behavior: contain; }
+.queue .tr.cur { background: #ffffff14; }
 .lyrics { white-space: pre-wrap; line-height: 1.7; color: var(--t2); overflow-wrap: anywhere; }
 
 /* dialog, toast, ad */
@@ -247,6 +257,9 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
   .now .pane { gap: 6px; }
   .playbtn.big { width: 58px; height: 58px; }
 }
+.now { isolation: isolate; }
+.nebula { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -2; display: block; }
+.now::after { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(#0b0a0d33, #0b0a0d1a 35%, #0b0a0dcc 80%); }
 /* motion */
 @keyframes eq { from { height: 25%; } to { height: 100%; } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
@@ -299,14 +312,13 @@ html.ios input:not([type=range], [type=checkbox], [type=file]), html.ios select,
 html.ios .sheet { background: linear-gradient(135deg, #2a2632d9, #15131bd9); }
 html.ios .scrim { background: #00000080; }
 html.ios .now { background: #0b0a0d; isolation: isolate; }
-html.ios .now::before { content: ''; position: fixed; inset: -12%; z-index: -1; background: var(--art, none) center / cover, linear-gradient(160deg, #5a2a2f, #1c1530); filter: blur(60px) saturate(170%) brightness(.55); }
+html.ios .now::before { content: ''; position: fixed; inset: -12%; z-index: -3; background: var(--art, none) center / cover, linear-gradient(160deg, #5a2a2f, #1c1530); filter: blur(60px) saturate(170%) brightness(.55); }
 html.ios .now .ib { border-radius: 50%; box-shadow: var(--g-edge); }
 @media (max-width: 819px) {
   html.ios .shell { grid-template: "main" minmax(0, 1fr) / minmax(0, 1fr); }
   html.ios .view { padding-bottom: calc(var(--sab) + 170px); }
   html.ios .tabs { position: fixed; z-index: 20; left: calc(12px + var(--sal)); right: calc(12px + var(--sar)); bottom: var(--tab-b); padding: 4px; border-radius: 30px; }
   html.ios .tabs a { height: 54px; border-radius: 26px; }
-  html.ios .tabs a.on { background: #ffffff24; box-shadow: inset 0 1px 0 #ffffff40; color: var(--t1); }
   html.ios .player { position: fixed; z-index: 20; left: calc(12px + var(--sal)); right: calc(12px + var(--sar)); bottom: calc(var(--tab-b) + 70px); padding: 7px 8px 7px 8px; border-radius: 24px; overflow: hidden; }
   html.ios .player .thin { top: auto; bottom: 0; }
   html.ios .sheet { margin: 0 8px max(var(--sab), 8px); border-radius: 28px; width: min(480px, calc(100% - 16px)); padding-bottom: 18px; }

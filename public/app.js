@@ -338,8 +338,19 @@ function volume() {
 function cycleRepeat() { P.repeat = { off: 'all', all: 'one', one: 'off' }[P.repeat]; toast({ off: 'Takrorlash o\'chiq', all: 'Hammasini takrorlash', one: 'Bitta qo\'shiqni takrorlash' }[P.repeat]); syncPlayer(); }
 
 // ---------- now playing ----------
-function openNow() { renderNow(); ui.now.classList.add('show'); }
-function closeNow() { ui.now?.classList.remove('show'); }
+const nebulaCanvas = h('canvas', { class: 'nebula', 'aria-hidden': 'true' });
+let stopNebula = null;
+function openNow() {
+  renderNow();
+  ui.now.classList.add('show');
+  if (stopNebula || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  import('./nebula.js').then(m => { if (ui.now.classList.contains('show') && !stopNebula) stopNebula = m.startNebula(nebulaCanvas, () => !audio.paused); }).catch(() => {});
+}
+function closeNow() {
+  ui.now?.classList.remove('show');
+  stopNebula?.();
+  stopNebula = null;
+}
 function renderNow(mode) {
   const t = P.track;
   if (!t) return closeNow();
@@ -347,9 +358,9 @@ function renderNow(mode) {
   const m = ui.nowMode || 'art';
   ui.now.style.setProperty('--art', t.cover ? `url("${t.cover}")` : 'none');
   const left = m === 'lyrics' ? h('div', { class: 'lyrics', id: 'lyr' }, 'Yuklanmoqda…')
-    : m === 'queue' ? h('div', { class: 'list' }, P.queue.slice(P.i, P.i + 30).map((q, n) => h('button', { class: 'tr', style: 'margin:0;width:100%', 'data-id': q.id, onclick: () => loadAt(P.i + n) }, cover(q.cover, q.title), h('div', { class: 'grow', style: 'text-align:left' }, h('div', { class: 'clip t' }, q.title), h('div', { class: 'clip s' }, q.artist)))))
+    : m === 'queue' ? h('div', { class: 'list queue' }, P.queue.map((q, n) => h('button', { class: `tr ${n === P.i ? 'cur' : ''}`, 'data-id': q.id, style: 'margin:0;width:100%', onclick: () => loadAt(n), 'aria-current': n === P.i ? 'true' : null }, cover(q.cover, q.title), h('div', { class: 'grow', style: 'text-align:left' }, h('div', { class: 'clip t' }, q.title), h('div', { class: 'clip s' }, q.artist)))))
     : cover(t.cover, t.title, 'art');
-  ui.now.replaceChildren(h('div', { class: 'now-in' },
+  ui.now.replaceChildren(nebulaCanvas, h('div', { class: 'now-in' },
     h('div', { class: 'top' },
       iconBtn('down', 'Yopish', closeNow),
       h('div', { class: 'small muted clip', style: 'font-weight:700' }, t.album || 'Hozir ijro etilmoqda'),
@@ -371,6 +382,7 @@ function renderNow(mode) {
         iconBtn('text', 'Qo\'shiq matni', () => renderNow(m === 'lyrics' ? 'art' : 'lyrics'), m === 'lyrics' ? 'on' : ''),
         iconBtn('queue', 'Navbat', () => renderNow(m === 'queue' ? 'art' : 'queue'), m === 'queue' ? 'on' : '')))));
   if (m === 'lyrics') api(`/api/tracks/${t.id}`).then(d => { const l = document.getElementById('lyr'); if (l) l.textContent = d.lyrics || 'Bu qo\'shiq uchun matn hali kiritilmagan.'; }).catch(() => {});
+  if (m === 'queue') ui.now.querySelector('.queue .cur')?.scrollIntoView({ block: 'center' });
   paintTime();
 }
 
@@ -586,6 +598,7 @@ const V = {
         h('div', { class: 'row between wrap' }, h('div', { class: 'grow' }, h('h3', { class: 'clip' }, u.email)), h('span', { class: 'tag' }, label)),
         h('label', { class: 'f' }, 'Ism', name), h('button', { class: 'btn light' }, 'Saqlash')),
       u.role === 'admin' ? h('p', { class: 'small dim', style: 'overflow-wrap:anywhere' }, diag) : null,
+      h('p', { class: 'small dim' }, 'Pleyer animatsiyasi: "nebula", muallif ', h('a', { href: 'https://www.youtube.com/@yoniicat', target: '_blank', rel: 'noopener', style: 'text-decoration:underline' }, 'Firecat (@yoniicat)'), ', Vizzy.io loyihasi asosida.'),
       h('div', { class: 'row wrap' },
         h('a', { class: 'btn', href: '/premium' }, 'Tariflar'),
         h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
@@ -686,11 +699,61 @@ function render() {
   const adminNav = S.user.role === 'admin' ? [['/admin', 'admin', 'Admin']] : [];
   root.replaceChildren(h('div', { class: 'shell' },
     h('aside', { class: 'side' }, h('a', { class: 'logo', href: '/' }, h('img', { src: '/icon.svg', alt: '' }), h('span', { class: 'clip' }, S.settings.siteName)), h('nav', null, navLinks([...adminNav, ['/account', 'user', 'Akkaunt']])), sideLists),
-    mainEl, playerBar(), h('nav', { class: 'tabs' }, navLinks(adminNav))), ui.now);
+    mainEl, playerBar(), dragTabs(h('nav', { class: 'tabs' }, h('i', { class: 'tab-pill', 'aria-hidden': 'true' }), navLinks(adminNav)))), ui.now);
   delete ui.player.dataset.id;
   renderSideLists();
   syncPlayer();
   route();
+}
+// Mobile bar: the pill follows the finger, and the section changes only on release.
+function movePill(tabs, link) {
+  const pill = tabs?.querySelector('.tab-pill');
+  if (!pill || !link) return;
+  const r = link.getBoundingClientRect(), o = tabs.getBoundingClientRect();
+  pill.style.width = `${r.width}px`;
+  pill.style.height = `${r.height}px`;
+  pill.style.transform = `translate3d(${r.left - o.left - tabs.clientLeft}px, ${r.top - o.top - tabs.clientTop}px, 0)`;
+}
+function syncTabs() {
+  const tabs = document.querySelector('.tabs');
+  if (tabs) movePill(tabs, tabs.querySelector('a.on') || tabs.querySelector('a'));
+}
+addEventListener('resize', syncTabs);
+function dragTabs(tabs) {
+  let held = null;
+  const under = x => {
+    const links = [...tabs.querySelectorAll('a')];
+    return links.reduce((best, l) => { const r = l.getBoundingClientRect(), d = Math.abs(x - (r.left + r.right) / 2); return d < best.d ? { l, d } : best; }, { l: links[0], d: Infinity }).l;
+  };
+  const hold = link => {
+    held = link;
+    movePill(tabs, link);
+    for (const l of tabs.querySelectorAll('a')) l.classList.toggle('hover', l === link);
+  };
+  const end = () => {
+    held = null;
+    tabs.classList.remove('held');
+    for (const l of tabs.querySelectorAll('a')) l.classList.remove('hover');
+  };
+  tabs.addEventListener('pointerdown', e => {
+    if (e.button) return;
+    e.preventDefault();
+    tabs.setPointerCapture(e.pointerId);
+    tabs.classList.add('held');
+    hold(under(e.clientX));
+  });
+  tabs.addEventListener('pointermove', e => { if (held) { const l = under(e.clientX); if (l !== held) hold(l); } });
+  tabs.addEventListener('pointerup', () => {
+    if (!held) return;
+    const href = held.getAttribute('href');
+    end();
+    if (location.pathname !== href) go(href); else syncTabs();
+  });
+  tabs.addEventListener('pointercancel', () => { end(); syncTabs(); });
+  // Pointer handling above owns touch and mouse; a keyboard Enter (detail 0) still follows the link normally.
+  tabs.addEventListener('click', e => { if (e.detail) { e.preventDefault(); e.stopPropagation(); } });
+  tabs.addEventListener('contextmenu', e => e.preventDefault());
+  return tabs;
 }
 let routeSeq = 0;
 async function route() {
@@ -702,6 +765,7 @@ async function route() {
     const href = a.dataset.nav;
     a.classList.toggle('on', href === '/' ? !parts.length : location.pathname.startsWith(href));
   }
+  syncTabs();
   const view = h('div', { class: 'view' });
   try {
     if (name === 'admin') {
