@@ -1,7 +1,7 @@
 // TypeScript, src/index.ts, Cloudflare Workers runtime: API, R2 streaming, admin.
 import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.ts';
 
-export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string }
+export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string; EMAIL?: { send(m: { to: string; from: { email: string; name: string }; subject: string; text: string; html: string }): Promise<unknown> } }
 // SQL rows are shaped by the query text beside each call, so they stay loosely typed.
 type Row = Record<string, any>;
 type Guard = 'user' | 'admin' | null;
@@ -113,8 +113,47 @@ route('POST', '/api/auth/register', async (req, env) => {
   await note(env, `reg:${ip(req)}`);
   if (await first(env, 'SELECT id FROM users WHERE email=?', email)) fail(409, "Bu email allaqachon ro'yxatdan o'tgan");
   const { hash, salt } = await hashPassword(password);
+  const s = await settings(env);
+  // The sender lives in settings, so moving to a new domain needs no code change. Empty means codes are off.
+  if (s.email_from && env.EMAIL) {
+    const prev = await first(env, 'SELECT sent_at FROM signups WHERE email=?', email);
+    if (prev && now() - prev.sent_at < 60) fail(429, 'Kod yuborilgan. Bir daqiqadan keyin qayta urinib ko\'ring.');
+    await limited(env, `code:${email}`, 5, 3600);
+    await note(env, `code:${email}`);
+    const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
+    await run(env, `INSERT INTO signups (email,name,pass_hash,pass_salt,code_hash,tries,expires,sent_at) VALUES (?,?,?,?,?,0,?,?)
+      ON CONFLICT(email) DO UPDATE SET name=excluded.name,pass_hash=excluded.pass_hash,pass_salt=excluded.pass_salt,code_hash=excluded.code_hash,tries=0,expires=excluded.expires,sent_at=excluded.sent_at`,
+      email, name, hash, salt, await hmac(env.SIGNING_SECRET, `signup.${email}.${code}`), now() + 600, now());
+    try {
+      await env.EMAIL.send({ to: email, from: { email: s.email_from, name: s.site_name }, subject: `${s.site_name}: tasdiqlash kodi ${code}`, text: `Tasdiqlash kodingiz: ${code}\nKod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.`, html: `<p>Tasdiqlash kodingiz:</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>Kod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.</p>` });
+    } catch (e) {
+      console.error(e);
+      await run(env, 'DELETE FROM signups WHERE email=?', email);
+      return fail(502, 'Email yuborib bo\'lmadi. Keyinroq urinib ko\'ring.');
+    }
+    return json({ verify: true, email }, 202);
+  }
   const id = uid();
   await run(env, 'INSERT INTO users (id,email,name,pass_hash,pass_salt,created_at,last_seen) VALUES (?,?,?,?,?,?,?)', id, email, name, hash, salt, now(), now());
+  return json({ ok: true }, 201, { 'set-cookie': await startSession(env, req, id) });
+}, null);
+
+route('POST', '/api/auth/verify', async (req, env) => {
+  const b = await body(req);
+  const email = str(b.email, 120).toLowerCase(), code = str(b.code, 6);
+  const row = await first(env, 'SELECT * FROM signups WHERE email=?', email);
+  if (!row || row.expires < now()) return fail(410, 'Kod eskirgan. Qaytadan ro\'yxatdan o\'ting.');
+  if (row.tries >= 5) { await run(env, 'DELETE FROM signups WHERE email=?', email); return fail(429, 'Urinishlar tugadi. Qaytadan ro\'yxatdan o\'ting.'); }
+  if (!safeEqual(await hmac(env.SIGNING_SECRET, `signup.${email}.${code}`), row.code_hash)) {
+    await run(env, 'UPDATE signups SET tries=tries+1 WHERE email=?', email);
+    return fail(401, 'Kod noto\'g\'ri');
+  }
+  if (await first(env, 'SELECT id FROM users WHERE email=?', email)) return fail(409, "Bu email allaqachon ro'yxatdan o'tgan");
+  const id = uid();
+  await env.DB.batch([
+    st(env, 'INSERT INTO users (id,email,name,pass_hash,pass_salt,created_at,last_seen) VALUES (?,?,?,?,?,?,?)', id, email, row.name, row.pass_hash, row.pass_salt, now(), now()),
+    st(env, 'DELETE FROM signups WHERE email=?', email),
+  ]);
   return json({ ok: true }, 201, { 'set-cookie': await startSession(env, req, id) });
 }, null);
 
@@ -369,18 +408,76 @@ route('GET', '/api/plans', async (req, env, { user }) => {
   const s = await settings(env);
   const [plans, pending, family] = await Promise.all([
     all(env, 'SELECT * FROM plans WHERE active=1 ORDER BY sort,price_uzs'),
-    first(env, "SELECT p.id,p.plan_id,p.reference,p.created_at FROM payments p WHERE p.user_id=? AND p.status='pending'", user.id),
+    first(env, "SELECT p.id,p.plan_id,p.reference,p.created_at FROM payments p WHERE p.user_id=? AND p.status='pending' AND p.provider='manual'", user.id),
     all(env, 'SELECT id,name,email FROM users WHERE family_owner_id=?', user.id),
   ]);
-  return json({ plans: plans.map(mapPlan), pending, family, card: { number: s.card_number, holder: s.card_holder } });
+  return json({ plans: plans.map(mapPlan), pending, family, card: { number: s.card_number, holder: s.card_holder }, click: clickReady(s) });
 });
+const clickReady = (s: Record<string, string>): boolean => !!(s.click_service_id && s.click_merchant_id && s.click_secret);
+// Admins, the exempt list and a switched-off plan system never pay.
+async function mustBeAbleToPay(env: Env, user: Row): Promise<void> {
+  const e = await entitlement(env, user, await settings(env));
+  if (['admin', 'exempt', 'plans_off'].includes(e.reason)) fail(400, 'Sizga to\'lov kerak emas');
+}
+async function grantPaid(env: Env, p: Row): Promise<void> {
+  const [plan, u] = await Promise.all([one(env, 'SELECT days FROM plans WHERE id=?', p.plan_id), one(env, 'SELECT plan_expires FROM users WHERE id=?', p.user_id)]);
+  await run(env, 'UPDATE users SET plan_id=?,plan_expires=? WHERE id=?', p.plan_id, Math.max(now(), u.plan_expires) + plan.days * DAY, p.user_id);
+}
+route('POST', '/api/payments/click', async (req, env, { user }) => {
+  await mustBeAbleToPay(env, user);
+  const s = await settings(env);
+  if (!clickReady(s)) return fail(503, 'Click hali ulanmagan');
+  const plan = await first(env, 'SELECT * FROM plans WHERE id=? AND active=1', str((await body(req)).planId, 40));
+  if (!plan) return fail(404, 'Tarif topilmadi');
+  // An unpaid order may still be open on Click's page, so it is reused, never cancelled.
+  const open = await first(env, "SELECT id FROM payments WHERE user_id=? AND plan_id=? AND amount=? AND provider='click' AND status='pending'", user.id, plan.id, plan.price_uzs);
+  const id = open?.id ?? uid();
+  if (!open) await run(env, "INSERT INTO payments (id,user_id,plan_id,amount,reference,provider,created_at) VALUES (?,?,?,?,'Click','click',?)", id, user.id, plan.id, plan.price_uzs, now());
+  const q = new URLSearchParams({ service_id: s.click_service_id, merchant_id: s.click_merchant_id, amount: Number(plan.price_uzs).toFixed(2), transaction_param: id, return_url: `${new URL(req.url).origin}/premium` });
+  return json({ url: `https://my.click.uz/services/pay?${q}` }, 201);
+});
+
+// Click SHOP API: https://docs.click.uz/en/shop-api/requests. The signature is the only proof a call really came from Click.
+route('POST', '/api/click/callback', async (req, env) => {
+  const f = await req.formData();
+  const get = (k: string): string => String(f.get(k) ?? '');
+  const transId = get('click_trans_id'), order = get('merchant_trans_id'), action = get('action'), amount = get('amount'), prepareId = get('merchant_prepare_id');
+  const reply = (error: number, note: string, extra: Record<string, unknown> = {}) => json({ click_trans_id: Number(transId), merchant_trans_id: order, error, error_note: note, ...extra });
+  if (action !== '0' && action !== '1') return reply(-3, 'Action not found');
+  const s = await settings(env);
+  if (!clickReady(s) || get('service_id') !== s.click_service_id) return reply(-1, 'SIGN CHECK FAILED!');
+  const signed = transId + get('service_id') + s.click_secret + order + (action === '1' ? prepareId : '') + amount + action + get('sign_time');
+  const expected = hex(await crypto.subtle.digest('MD5', new TextEncoder().encode(signed)));
+  if (!safeEqual(expected, get('sign_string').toLowerCase())) return reply(-1, 'SIGN CHECK FAILED!');
+  const p = await first(env, "SELECT rowid rid,* FROM payments WHERE id=? AND provider='click'", order);
+  if (!p) return reply(-5, 'User does not exist');
+  if (Number(amount) !== p.amount) return reply(-2, 'Incorrect parameter amount');
+  if (p.status === 'approved') return reply(-4, 'Already paid');
+  if (p.status !== 'pending') return reply(-9, 'Transaction cancelled');
+  if (action === '0') {
+    await run(env, 'UPDATE payments SET click_trans_id=? WHERE id=?', transId, p.id);
+    return reply(0, 'Success', { merchant_prepare_id: p.rid });
+  }
+  if (String(p.rid) !== prepareId || p.click_trans_id !== transId) return reply(-6, 'Transaction does not exist');
+  if (Number(get('error')) < 0) {
+    await run(env, "UPDATE payments SET status='rejected',decided_at=? WHERE id=? AND status='pending'", now(), p.id);
+    return reply(-9, 'Transaction cancelled');
+  }
+  // The status guard means Click's retries cannot extend a plan twice.
+  const done = await run(env, "UPDATE payments SET status='approved',decided_at=? WHERE id=? AND status='pending'", now(), p.id);
+  if (!done.meta.changes) return reply(-4, 'Already paid');
+  await grantPaid(env, p);
+  return reply(0, 'Success', { merchant_confirm_id: p.rid });
+}, null);
+
 route('POST', '/api/payments', async (req, env, { user }) => {
+  await mustBeAbleToPay(env, user);
   const b = await body(req);
   const plan = await first(env, 'SELECT * FROM plans WHERE id=? AND active=1', str(b.planId, 40));
   if (!plan) return fail(404, 'Tarif topilmadi');
   const reference = str(b.reference, 120);
   if (reference.length < 3) fail(400, 'To\'lov ma\'lumotini kiriting (chek raqami yoki karta oxirgi 4 raqami)');
-  if (await first(env, "SELECT id FROM payments WHERE user_id=? AND status='pending'", user.id)) fail(409, 'Oldingi so\'rovingiz hali ko\'rib chiqilmoqda');
+  if (await first(env, "SELECT id FROM payments WHERE user_id=? AND status='pending' AND provider='manual'", user.id)) fail(409, 'Oldingi so\'rovingiz hali ko\'rib chiqilmoqda');
   await run(env, 'INSERT INTO payments (id,user_id,plan_id,amount,reference,created_at) VALUES (?,?,?,?,?,?)', uid(), user.id, plan.id, plan.price_uzs, reference, now());
   return json({ ok: true }, 201);
 });
@@ -473,7 +570,7 @@ route('GET', '/api/admin/stats', async (req, env) => {
     one(env, 'SELECT COALESCE(SUM(play_count),0) c FROM tracks'),
     one(env, 'SELECT COUNT(*) c FROM plays WHERE counted=1 AND started_at>?', t - 7 * DAY),
     one(env, 'SELECT COALESCE(SUM(size),0) bytes,COUNT(*) tracks,COALESCE(SUM(duration),0) seconds FROM tracks'),
-    one(env, "SELECT COUNT(*) c FROM payments WHERE status='pending'"),
+    one(env, "SELECT COUNT(*) c FROM payments WHERE status='pending' AND provider='manual'"),
     one(env, "SELECT COALESCE(SUM(amount),0) c FROM payments WHERE status='approved' AND decided_at>?", t - 30 * DAY),
     all(env, `SELECT t.id,t.title,a.name artist,COUNT(*) plays FROM plays p JOIN tracks t ON t.id=p.track_id JOIN artists a ON a.id=t.artist_id WHERE p.counted=1 AND p.started_at>? GROUP BY t.id ORDER BY plays DESC LIMIT 10`, t - 7 * DAY),
     all(env, 'SELECT t.id,t.title,a.name artist,t.play_count plays FROM tracks t JOIN artists a ON a.id=t.artist_id ORDER BY t.play_count DESC LIMIT 10'),
@@ -674,7 +771,7 @@ route('POST', '/api/admin/plans', async (req, env) => {
 }, 'admin');
 
 route('GET', '/api/admin/payments', async (req, env) => json({
-  payments: await all(env, "SELECT p.*,u.name user_name,u.email,pl.name plan_name FROM payments p JOIN users u ON u.id=p.user_id JOIN plans pl ON pl.id=p.plan_id ORDER BY p.status='pending' DESC,p.created_at DESC LIMIT 200"),
+  payments: await all(env, "SELECT p.*,u.name user_name,u.email,pl.name plan_name FROM payments p JOIN users u ON u.id=p.user_id JOIN plans pl ON pl.id=p.plan_id WHERE NOT (p.provider='click' AND p.status='pending') ORDER BY p.status='pending' DESC,p.created_at DESC LIMIT 200"),
 }), 'admin');
 route('POST', '/api/admin/payments/:id/:decision', async (req, env, { params }) => {
   if (!['approve', 'reject'].includes(params.decision)) fail(404, 'Topilmadi');
@@ -683,10 +780,7 @@ route('POST', '/api/admin/payments/:id/:decision', async (req, env, { params }) 
   // The status guard makes a double click unable to extend a plan twice.
   const r = await run(env, "UPDATE payments SET status=?,decided_at=? WHERE id=? AND status='pending'", params.decision === 'approve' ? 'approved' : 'rejected', now(), p.id);
   if (!r.meta.changes) fail(409, 'To\'lov allaqachon ko\'rib chiqilgan');
-  if (params.decision === 'approve') {
-    const u = await one(env, 'SELECT plan_expires FROM users WHERE id=?', p.user_id);
-    await run(env, 'UPDATE users SET plan_id=?,plan_expires=? WHERE id=?', p.plan_id, Math.max(now(), u.plan_expires) + p.days * DAY, p.user_id);
-  }
+  if (params.decision === 'approve') await grantPaid(env, p);
   return json({ ok: true });
 }, 'admin');
 
@@ -725,8 +819,9 @@ route('DELETE', '/api/admin/ads/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-const SETTING_KEYS = ['plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
-route('GET', '/api/admin/settings', async (req, env) => json(await settings(env)), 'admin');
+const SETTING_KEYS = ['click_service_id', 'click_merchant_id', 'email_from', 'plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
+// The secret can be replaced from the panel but never read back.
+route('GET', '/api/admin/settings', async (req, env) => { const { click_secret, ...rest } = await settings(env); return json({ ...rest, click_secret_set: !!click_secret }); }, 'admin');
 route('PATCH', '/api/admin/settings', async (req, env) => {
   const b = await body(req);
   const writes = [];
@@ -739,6 +834,9 @@ route('PATCH', '/api/admin/settings', async (req, env) => {
     if (k === 'support_url') v = httpUrl(b[k]);
     writes.push(st(env, 'INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, v));
   }
+  const secret = str(b.click_secret, 200);
+  if (secret) writes.push(st(env, "INSERT INTO settings (key,value) VALUES ('click_secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", secret));
+  if (b.email_from !== undefined && str(b.email_from, 120) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str(b.email_from, 120))) fail(400, "Yuboruvchi email noto'g'ri");
   if (writes.length) await env.DB.batch(writes);
   return json({ ok: true });
 }, 'admin');
@@ -769,7 +867,7 @@ route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
 // D1 has a hard 10 GB limit. Stats read 30 days of plays; all-time counts live on tracks.play_count.
 async function cleanup(env: Env): Promise<void> {
   const t = now();
-  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t]];
+  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t], ['signups', 'expires', t]];
   for (const [table, col, before] of jobs) {
     for (let i = 0; i < 20; i++) {
       const r = await run(env, `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${col}<? LIMIT 20000)`, before);

@@ -14,5 +14,6 @@
   "workers_dev": true,
   "routes": [{ "pattern": "rythm.svrvs.uz", "custom_domain": true }],
   "triggers": { "crons": ["17 3 * * *"] },
+  "send_email": [{ "name": "EMAIL" }],
   "observability": { "enabled": true }
 }

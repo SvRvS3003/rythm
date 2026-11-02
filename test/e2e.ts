@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 const BASE = process.argv[2] || 'http://127.0.0.1:8787', PASS = process.argv[3] || 'local-dev-pass', LOGIN = process.argv[4] || 'admin';
 const tmp = mkdtempSync(join(tmpdir(), 'rythm-'));
@@ -118,6 +118,66 @@ await J(user(`/api/plays/${sp.playId}/counted`, { method: 'POST' }));
 const topNow = (await J(admin('/api/admin/stats'))).top7.find(t => t.id === ST.id);
 assert.equal(topNow.plays, 1); ok('listened play counted exactly once and appears in top songs');
 await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
+// Click: signed calls only, exact amount, idempotent, cancels honoured.
+{
+  const secret = 'test-secret-key', service = '101';
+  assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { click_service_id: service, click_merchant_id: '202', click_secret: secret } }))).s, 200);
+  const shown = await J(admin('/api/admin/settings')); assert.equal(shown.click_secret, undefined); assert.equal(shown.click_secret_set, true);
+  assert.equal((await J(admin('/api/payments/click', { method: 'POST', body: { planId: 'puls' } }))).s, 400); ok('admin never pays');
+  const buyer = client();
+  await buyer('/api/auth/register', { method: 'POST', body: { name: 'Xaridor', email: `b${Date.now()}@test.uz`, password: 'parol12345' } });
+  const planPrice = (await J(buyer('/api/plans'))).plans.find((x: any) => x.id === 'puls').price;
+  const link = await J(buyer('/api/payments/click', { method: 'POST', body: { planId: 'puls' } }));
+  const url = new URL(link.url); const order = url.searchParams.get('transaction_param');
+  assert.equal(url.host, 'my.click.uz'); assert.equal(url.searchParams.get('amount'), planPrice.toFixed(2));
+  const md5 = (x: string) => createHash('md5').update(x).digest('hex');
+  const call = async (action: number, { amount = planPrice.toFixed(2), prepare = '', trans = '777', error = '0', ord = order, bad = false } = {}) => {
+    const time = '2026-11-02 12:00:00';
+    const sign = bad ? '0'.repeat(32) : md5(trans + service + secret + ord + (action === 1 ? prepare : '') + amount + action + time);
+    const form = new URLSearchParams({ click_trans_id: trans, service_id: service, click_paydoc_id: '1', merchant_trans_id: ord, merchant_prepare_id: prepare, amount, action: String(action), error, error_note: 'x', sign_time: time, sign_string: sign });
+    return (await fetch(`${BASE}/api/click/callback`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form })).json();
+  };
+  assert.equal((await call(0, { bad: true })).error, -1);
+  assert.equal((await call(0, { amount: '1.00' })).error, -2);
+  assert.equal((await call(0, { ord: 'nope' })).error, -5);
+  assert.equal((await call(5)).error, -3);
+  const pre = await call(0); assert.equal(pre.error, 0); assert.ok(pre.merchant_prepare_id);
+  assert.equal((await J(buyer('/api/me'))).user.entitlement.premium, false);
+  const prepare = String(pre.merchant_prepare_id);
+  assert.equal((await call(1, { prepare: '999999' })).error, -6);
+  const done = await call(1, { prepare }); assert.equal(done.error, 0); assert.ok(done.merchant_confirm_id);
+  const exp1 = (await J(buyer('/api/me'))).user.entitlement.expires; assert.ok(exp1);
+  assert.equal((await call(1, { prepare })).error, -4);
+  assert.equal((await J(buyer('/api/me'))).user.entitlement.expires, exp1); ok('Click: bad sign, amount, order and action refused; repeat cannot extend the plan');
+  const again = new URL((await J(buyer('/api/payments/click', { method: 'POST', body: { planId: 'puls' } }))).url).searchParams.get('transaction_param');
+  const p2 = await call(0, { ord: again, trans: '888' });
+  assert.equal((await call(1, { ord: again, trans: '888', prepare: String(p2.merchant_prepare_id), error: '-5017' })).error, -9);
+  assert.equal((await call(0, { ord: again, trans: '888' })).error, -9);
+  assert.equal((await J(buyer('/api/me'))).user.entitlement.expires, exp1); ok('Click: a failed payment grants nothing and stays cancelled');
+  await J(admin('/api/admin/settings', { method: 'PATCH', body: { click_service_id: '', click_merchant_id: '' } }));
+  assert.equal((await J(buyer('/api/plans'))).click, false);
+}
+// Email code: account exists only after the right code; tries are limited.
+{
+  const em = `code${Date.now()}@test.uz`, c1 = client();
+  assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: 'not-an-email' } }))).s, 400);
+  assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: 'no-reply@svrvs.uz' } }))).s, 200);
+  const reg = await J(c1('/api/auth/register', { method: 'POST', body: { name: 'Kod', email: em, password: 'parol12345' } }));
+  assert.equal(reg.s, 202); assert.equal(reg.verify, true);
+  assert.equal((await J(c1('/api/me'))).user, null);
+  assert.equal((await J(c1('/api/auth/login', { method: 'POST', body: { email: em, password: 'parol12345' } }))).s, 401);
+  assert.equal((await J(c1('/api/auth/register', { method: 'POST', body: { name: 'Kod', email: em, password: 'parol12345' } }))).s, 429);
+  assert.equal((await J(c1('/api/auth/verify', { method: 'POST', body: { email: em, code: '000000' } }))).s, 401); ok('email code: no account before the code, wrong code refused');
+  const secret = readFileSync('.dev.vars', 'utf8').match(/SIGNING_SECRET=(.*)/)?.[1]?.trim();
+  if (secret && BASE.includes('127.0.0.1')) {
+    const known = createHmac('sha256', secret).update(`signup.${em}.123456`).digest('hex');
+    execFileSync('npx', ['wrangler', 'd1', 'execute', 'rythm', '--local', '--command', `UPDATE signups SET code_hash='${known}' WHERE email='${em}'`], { stdio: 'ignore' });
+    assert.equal((await J(c1('/api/auth/verify', { method: 'POST', body: { email: em, code: '123456' } }))).s, 201);
+    assert.equal((await J(c1('/api/me'))).user.email, em); ok('email code: the right code creates the account and signs in');
+    assert.equal((await J(c1('/api/auth/verify', { method: 'POST', body: { email: em, code: '123456' } }))).s, 410);
+  }
+  await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: '' } }));
+}
 // Family seats
 const friend = client(), fm = `f${Date.now()}@test.uz`;
 await friend('/api/auth/register', { method: 'POST', body: { name: 'Vali', email: fm, password: 'parol12345' } });

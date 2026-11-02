@@ -241,6 +241,10 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
       S.settings.siteName = f.site_name.value; S.settings.heroTitle = f.hero_title.value; S.settings.heroSub = f.hero_sub.value; S.settings.supportUrl = f.support_url.value;
     }) },
       h('h2', null, 'Sayt'), h('div', { class: 'two' }, field('Nom', inp('site_name')), field('Yordam havolasi', inp('support_url', 'https://t.me/...')), field('Bosh sarlavha', inp('hero_title')), field('Bosh matn', inp('hero_sub'))),
+      h('h2', null, 'Click to\'lovi'), h('p', { class: 'muted small', style: 'overflow-wrap:anywhere' }, `Uchala maydon to'lsa, foydalanuvchilar Click orqali to'laydi va tarif avtomatik yoqiladi. Click kabinetida Prepare va Complete manziliga shuni yozing: ${location.origin}/api/click/callback`),
+      h('div', { class: 'two' }, field('Service ID', inp('click_service_id')), field('Merchant ID', inp('click_merchant_id')), field(`Secret key${s.click_secret_set ? ' (kiritilgan, o\'zgartirish uchun yangisini yozing)' : ''}`, (f.click_secret = h('input', { type: 'password', autocomplete: 'off', placeholder: s.click_secret_set ? '••••••••' : '' })))),
+      h('h2', null, 'Email kod'), h('p', { class: 'muted small' }, 'Yuboruvchi manzil kiritilsa, yangi foydalanuvchiga tasdiqlash kodi boradi. Bo\'sh qolsa, kodsiz ro\'yxatdan o\'tiladi. Domen Cloudflare Email Service\'ga ulangan bo\'lishi kerak.'),
+      field('Yuboruvchi', inp('email_from', 'no-reply@svrvs.uz')),
       h('h2', null, 'To\'lov kartasi'), h('p', { class: 'muted small' }, 'Foydalanuvchilar tarif uchun shu kartaga to\'laydi.'), h('div', { class: 'two' }, field('Karta raqami', inp('card_number', '8600 0000 0000 0000')), field('Karta egasi', inp('card_holder'))),
       h('button', { class: 'btn pri' }, 'Saqlash')));
   },

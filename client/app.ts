@@ -732,6 +732,8 @@ const V: Record<string, View> = {
     el.append(h('div', { class: 'stack' }, h('h1', null, 'Musiqa, reklamasiz'), h('p', { class: 'muted' }, 'O\'zingizga mos tarifni tanlang. Istalgan vaqtda to\'xtatish mumkin.')));
     if (!S.settings.plansEnabled) el.append(empty('Hozir barcha foydalanuvchilar uchun tinglash bepul va reklamasiz.'));
     if (e?.reason === 'plan' || e?.reason === 'family') el.append(h('div', { class: 'upsell' }, h('div', null, h('h3', null, 'Tarifingiz faol'), h('p', { class: 'small muted' }, `${new Date(e.expires * 1000).toLocaleDateString('ru-RU')} gacha`))));
+    const free = ['admin', 'exempt'].includes(e?.reason);
+    if (free) el.append(h('div', { class: 'upsell' }, h('div', null, h('h3', null, 'Sizga to\'lov kerak emas'), h('p', { class: 'small muted' }, 'Akkauntingiz plan va reklamadan ozod.'))));
     if (d.pending) el.append(h('div', { class: 'upsell' }, h('div', null, h('h3', null, 'To\'lovingiz tekshirilmoqda'), h('p', { class: 'small muted' }, 'Admin tasdiqlashi bilan tarif faollashadi.'))));
     el.append(h('div', { class: 'plans' },
       h('div', { class: 'plan' }, h('h2', null, 'Sado'), h('p', { class: 'muted small' }, 'Bepul, reklama bilan'), h('div', { class: 'price' }, '0 so\'m'),
@@ -742,7 +744,7 @@ const V: Record<string, View> = {
         h('h2', null, p.name), h('p', { class: 'muted small' }, p.tagline),
         h('div', { class: 'price' }, money(p.price), h('span', { class: 'small muted', style: 'font-weight:600' }, ` / ${p.days === 30 ? 'oy' : p.days + ' kun'}`)),
         h('ul', null, p.features.map((f: string) => h('li', null, f))),
-        h('button', { class: `btn ${i === 0 ? 'pri' : 'light'}`, disabled: !!d.pending, onclick: () => buy(p, d.card) }, 'Tanlash')))));
+        free || !S.settings.plansEnabled ? null : h('button', { class: `btn ${i === 0 ? 'pri' : 'light'}`, disabled: !!d.pending, onclick: d.click ? guard(async () => { location.href = (await api('/api/payments/click', { method: 'POST', body: { planId: p.id } })).url; }) : () => buy(p, d.card) }, d.click ? 'Click orqali to\'lash' : 'Tanlash')))));
     if ((e?.reason === 'plan') && d.plans.find((p: Row) => p.id === e.planId)?.seats > 1) el.append(familyPanel(d.family));
   },
   async account(el) {
@@ -812,10 +814,23 @@ function familyPanel(family: Row[]) {
 
 // ---------- auth view ----------
 function authView() {
-  let mode = 'login';
+  let mode: 'login' | 'register' | 'code' = 'login', pendingEmail = '';
   const box = h('div', { class: 'auth' });
+  const brand = () => h('div', { class: 'logo' }, h('img', { src: '/icon.svg', alt: '' }), S.settings.siteName || 'SvRvS Rythm');
   const draw = () => {
     const err = h('div', { class: 'err', role: 'alert' });
+    if (mode === 'code') {
+      const code = h('input', { inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, pattern: '[0-9]{6}', required: true, 'aria-label': 'Tasdiqlash kodi' });
+      const submit = h('button', { class: 'btn pri full' }, 'Tasdiqlash');
+      box.replaceChildren(h('form', { onsubmit: async (e: Event) => {
+        e.preventDefault(); err.textContent = ''; submit.disabled = true;
+        try { await api('/api/auth/verify', { method: 'POST', body: { email: pendingEmail, code: code.value } }); await boot(); } catch (x) { err.textContent = (x as Error).message; submit.disabled = false; }
+      } }, brand(), h('h1', null, 'Emailni tasdiqlang'), h('p', { class: 'muted' }, `${pendingEmail} manziliga 6 xonali kod yubordik. Kod 10 daqiqa amal qiladi.`),
+        h('label', { class: 'f' }, 'Kod', code), err, submit,
+        h('button', { type: 'button', class: 'btn full', onclick: () => { mode = 'register'; draw(); } }, 'Orqaga')));
+      code.focus();
+      return;
+    }
     const name = h('input', { autocomplete: 'name', required: true });
     const email = h('input', { autocomplete: 'username', required: true, inputmode: 'email', autocapitalize: 'none' });
     const pass = h('input', { type: 'password', autocomplete: mode === 'login' ? 'current-password' : 'new-password', required: true });
@@ -823,11 +838,12 @@ function authView() {
     box.replaceChildren(h('form', { onsubmit: async (e: Event) => {
       e.preventDefault(); err.textContent = ''; submit.disabled = true;
       try {
-        await api(`/api/auth/${mode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: { name: name.value, email: email.value, password: pass.value } });
+        const r = await api(`/api/auth/${mode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: { name: name.value, email: email.value, password: pass.value } });
+        if (r.verify) { pendingEmail = r.email; mode = 'code'; draw(); return; }
         await boot();
       } catch (x) { err.textContent = (x as Error).message; submit.disabled = false; }
     } },
-      h('div', { class: 'logo' }, h('img', { src: '/icon.svg', alt: '' }), S.settings.siteName || 'SvRvS Rythm'),
+      brand(),
       h('h1', null, mode === 'login' ? 'Xush kelibsiz' : 'Bepul boshlang'),
       h('p', { class: 'muted' }, S.settings.heroSub || ''),
       mode === 'login' ? null : h('label', { class: 'f' }, 'Ism', name),
