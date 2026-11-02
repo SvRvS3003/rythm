@@ -398,6 +398,7 @@ const V = {
     const free = S.user.entitlement && !S.user.entitlement.premium;
     const hero = d.promoted[0];
     el.append(h('div', { class: 'top' }, h('h1', null, hr < 6 ? 'Xayrli tun' : hr < 12 ? 'Xayrli tong' : hr < 18 ? 'Xayrli kun' : 'Xayrli kech'), h('a', { class: 'ib', href: '/account', 'aria-label': 'Akkaunt' }, icon('user'))));
+    if (S.user.role === 'admin') el.append(h('a', { class: 'btn pri full', href: '/admin/upload' }, '+ Musiqa qo\'shish'));
     if (hero) el.append(h('section', { class: 'hero' },
       h('div', { class: 'stack' }, h('span', { class: 'tag hot' }, 'Reklama'), h('h2', null, hero.title), h('p', { class: 'muted' }, hero.promoText || hero.artist),
         h('div', null, h('button', { class: 'btn pri', onclick: () => playList(d.promoted, 0) }, icon('play', 18), 'Tinglash'))),

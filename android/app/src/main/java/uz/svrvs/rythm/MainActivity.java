@@ -62,7 +62,7 @@ public class MainActivity extends Activity {
             @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
                 if (pendingFiles != null) pendingFiles.onReceiveValue(null);
                 pendingFiles = cb;
-                try { startActivityForResult(p.createIntent(), PICK_FILE); } catch (Exception e) { pendingFiles = null; return false; }
+                try { startActivityForResult(p.createIntent().setType("*/*"), PICK_FILE); } catch (Exception e) { pendingFiles = null; return false; }
                 return true;
             }
         });

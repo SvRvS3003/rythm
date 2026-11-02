@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
-const BASE = 'https://svrvs-rythm.svrvs-rythm.workers.dev', ADB = join(homedir(), 'Library/Android/sdk/platform-tools/adb'), PKG = 'uz.svrvs.rythm';
+const BASE = 'https://rythm.svrvs-rythm.workers.dev', ADB = join(homedir(), 'Library/Android/sdk/platform-tools/adb'), PKG = 'uz.svrvs.rythm';
 const OUT = process.argv[2] || mkdtempSync(join(tmpdir(), 'droid-'));
 const adb = (...a) => execFileSync(ADB, a, { encoding: 'utf8', maxBuffer: 1 << 26 });
 const wait = ms => new Promise(r => setTimeout(r, ms));

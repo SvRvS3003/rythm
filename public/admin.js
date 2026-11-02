@@ -2,7 +2,7 @@
 import { h, api, cover, fmt, money, toast, sheet, go, refresh, S } from './app.js';
 
 const guard = fn => async (...a) => { try { return await fn(...a); } catch (e) { toast(e.message); } };
-const TABS = [['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['upload', 'Yuklash'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['settings', 'Sozlamalar']];
+const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['settings', 'Sozlamalar']];
 const field = (label, input) => h('label', { class: 'f' }, label, input);
 const date = t => (t ? new Date(t * 1000).toLocaleDateString('ru-RU') : '—');
 const gb = b => (b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`);
@@ -46,6 +46,7 @@ const VIEWS = {
     const days = [...Array(30)].map((_, i) => { const k = new Date(Date.now() - (29 - i) * 864e5).toISOString().slice(0, 10); return { k, c: d.daily.find(x => x.d === k)?.c || 0 }; });
     const top = (title, list) => h('section', { class: 'panel' }, h('h2', null, title), list.length ? list.map((t, i) => h('div', { class: 'item' }, h('b', { style: 'width:22px;color:var(--a2)' }, i + 1), h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, t.title), h('div', { class: 'clip small muted' }, t.artist)), h('b', null, t.plays))) : h('p', { class: 'muted' }, 'Hali tinglashlar yo\'q'));
     el.append(...[
+      h('a', { class: 'btn pri full', href: '/admin/upload' }, '+ Musiqa qo\'shish'),
       h('div', { class: 'kpis' }, kpi(d.users, 'Foydalanuvchilar'), kpi(d.active1, 'Faol (24 soat)'), kpi(d.active30, 'Faol (30 kun)'), kpi(d.newUsers7, 'Yangi (7 kun)'), kpi(d.paid, 'Pullik obunachilar'), kpi(d.exempt, 'Plansiz ro\'yxat'), kpi(d.plays, 'Jami tinglashlar'), kpi(d.plays7, 'Tinglash (7 kun)'), kpi(money(d.revenue30), 'Daromad (30 kun)'), kpi(gb(d.storage.bytes), `R2: ${d.storage.tracks} ta WAV`)),
       d.pendingPayments ? h('a', { class: 'upsell', href: '/admin/payments' }, h('h3', null, `${d.pendingPayments} ta to'lov tasdiq kutmoqda`), h('span', { class: 'btn sm pri' }, 'Ko\'rish')) : null,
       h('section', { class: 'panel' }, h('h2', null, 'Tinglashlar, 30 kun'), h('div', { class: 'bars', role: 'img', 'aria-label': 'Kunlik tinglashlar grafigi' }, days.map(x => { const b = h('i', { title: `${x.k}: ${x.c}` }); b.style.height = `${(x.c / max) * 100}%`; return b; }))),
