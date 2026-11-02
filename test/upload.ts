@@ -1,4 +1,4 @@
-// JavaScript, test/upload.mjs, node + playwright: adds a song through the real admin form. Usage: node test/upload.mjs <base> [outDir]
+// JavaScript, test/upload.ts, node + playwright: adds a song through the real admin form. Usage: node test/upload.ts <base> [outDir]
 import { webkit } from 'playwright';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -6,7 +6,7 @@ import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const BASE = process.argv[2], OUT = process.argv[3] || mkdtempSync(join(tmpdir(), 'up-'));
-const v = readFileSync('.prod.vars', 'utf8'), login = v.match(/ADMIN_LOGIN=(.*)/)[1].trim(), pass = v.match(/ADMIN_PASSWORD=(.*)/)[1].trim();
+const v = readFileSync('.prod.vars', 'utf8'), login = process.env.LOGIN || v.match(/ADMIN_LOGIN=(.*)/)[1].trim(), pass = process.env.PASS || v.match(/ADMIN_PASSWORD=(.*)/)[1].trim();
 const ff = (n, a) => { const f = join(OUT, n); execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...a, f]); return f; };
 const wav = ff('Forma Sinovi.wav', ['-f', 'lavfi', '-i', 'sine=440:duration=130:sample_rate=48000', '-af', 'aformat=channel_layouts=stereo', '-c:a', 'pcm_s24le']);
 const mp3 = ff('Yomon.mp3', ['-f', 'lavfi', '-i', 'sine=440:duration=2']);
@@ -27,25 +27,30 @@ const send = async file => {
   await p.getByLabel('Ijrochi').fill('Forma Ijrochi');
   await p.getByRole('button', { name: 'Yuklash', exact: true }).click();
 };
-await send(wav);
-await p.getByText(/^✓ Forma Sinovi/).waitFor({ timeout: 240000 });
-console.log('  ok', await p.getByText(/^✓ Forma Sinovi/).textContent());
 await send(mp3);
 await p.getByText(/^✕ Yomon\.mp3/).waitFor({ timeout: 60000 }); console.log('  ok mp3 refused:', await p.getByText(/^✕ Yomon/).textContent());
 await send(fake);
 await p.getByText(/^✕ niqob\.wav/).waitFor({ timeout: 60000 }); console.log('  ok fake wav refused:', (await p.getByText(/^✕ niqob/).textContent()).slice(0, 80));
+assert.ok(p.url().endsWith('/admin/upload'), 'a failed upload must stay on the form');
+await p.goto(`${BASE}/admin/upload`); await p.waitForSelector('input[type=file][multiple]');
+await send(wav);
+await p.waitForURL(u => u.pathname === '/', { timeout: 240000 });
+await p.locator('.card.spotlight', { hasText: 'Forma Sinovi' }).waitFor({ timeout: 8000 });
+console.log('  ok after upload the home page opens and spotlights the new song');
 await p.screenshot({ path: join(OUT, 'done.png') });
 // Listed, playable, stored size matches, then removed.
 const out = await p.evaluate(async () => {
   const { tracks } = await (await fetch('/api/admin/tracks')).json();
   const t = tracks.find(x => x.title === 'Forma Sinovi');
+  const rhythm = t.rhythm;
   const pl = await (await fetch('/api/play', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trackId: t.id }) })).json();
   const r = await fetch(pl.url, { headers: { range: 'bytes=0-3' } });
   const head = new TextDecoder().decode(await r.arrayBuffer());
   const total = r.headers.get('content-range');
   await fetch(`/api/admin/tracks/${t.id}`, { method: 'DELETE' });
-  return { count: tracks.length, status: r.status, head, total };
+  return { count: tracks.length, status: r.status, head, total, rhythm };
 });
+assert.ok(out.rhythm, 'beat map was not stored'); console.log('  ok beat map stored on upload');
 assert.equal(out.status, 206); assert.equal(out.head, 'RIFF');
 assert.equal(Number(out.total.split('/')[1]), readFileSync(wav).length);
 console.log('  ok stored in R2 at full size:', out.total);

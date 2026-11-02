@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWav, parseRange, imageType, isApk, hashPassword, safeEqual } from '../src/lib.js';
+import { unseen } from '../client/queue.ts';
+import { analyzeWav, BANDS, FPS } from '../client/rhythm.ts';
+import { parseWav, parseRange, imageType, isApk, hashPassword, safeEqual } from '../src/lib.ts';
 
-function wav({ format = 1, bits = 16, rate = 44100, ch = 2, dataSize = 1000, extra = 0, sub } = {}) {
+function wav({ format = 1, bits = 16, rate = 44100, ch = 2, dataSize = 1000, extra = 0, sub = 0 }: { format?: number; bits?: number; rate?: number; ch?: number; dataSize?: number; extra?: number; sub?: number } = {}) {
   const fmtSize = sub ? 40 : 16;
   const b = new Uint8Array(12 + (extra ? 8 + extra : 0) + 8 + fmtSize + 8 + dataSize), v = new DataView(b.buffer);
   const s = (o, t) => [...t].forEach((c, i) => (b[o + i] = c.charCodeAt(0)));
@@ -53,4 +55,32 @@ test('password hashing round trip', async () => {
   const { hash, salt } = await hashPassword('secret123');
   assert.ok(safeEqual(hash, (await hashPassword('secret123', salt)).hash));
   assert.ok(!safeEqual(hash, (await hashPassword('wrong', salt)).hash));
+});
+
+test('beat map follows the real bass hits in the PCM', () => {
+  const rate = 48000, secs = 4, n = rate * secs;
+  for (const bits of [16, 24]) {
+    const w = wav({ bits, rate, ch: 1, dataSize: n * bits / 8 });
+    const v = new DataView(w.buffer), start = w.length - n * bits / 8;
+    for (let i = 0; i < n; i++) {
+      const on = (i / rate) % 0.5 < 0.1; // a 100 ms, 80 Hz hit every half second
+      const s = on ? Math.sin(2 * Math.PI * 80 * i / rate) * 0.9 : 0;
+      const p = start + i * bits / 8;
+      if (bits === 16) v.setInt16(p, s * 32767, true);
+      else { const x = Math.round(s * 8388607); v.setUint16(p, x & 0xffff, true); v.setInt8(p + 2, x >> 16); }
+    }
+    const map = analyzeWav(w);
+    assert.equal(map.length, secs * FPS * BANDS);
+    const bass = (t: number) => map[Math.round(t * FPS) * BANDS + 2];
+    for (const hit of [1, 1.5, 2, 2.5, 3]) {
+      assert.ok(bass(hit) > 150, `${bits}-bit hit at ${hit}s = ${bass(hit)}`);
+      assert.ok(bass(hit + 0.3) < 30, `${bits}-bit gap after ${hit}s = ${bass(hit + 0.3)}`);
+    }
+  }
+});
+
+test('queue never takes a song twice, even after a full cycle', () => {
+  const q = [{ id: 'a' }, { id: 'b' }];
+  assert.deepEqual(unseen(q, [{ id: 'b' }, { id: 'c' }, { id: 'c' }]).map(t => t.id), ['c']);
+  assert.deepEqual(unseen(q, [{ id: 'a' }, { id: 'b' }]), []);
 });

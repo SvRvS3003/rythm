@@ -1,0 +1,104 @@
+// JavaScript, test/nebula.ts, node + playwright: the player backdrop really draws, and stops when closed. Usage: node test/nebula.ts <outDir> [webkit|chromium]
+import { webkit, chromium } from 'playwright';
+import assert from 'node:assert/strict';
+const OUT = process.argv[2] || 'dist/shots', name = process.argv[3] || 'chromium';
+const b = await (name === 'webkit' ? webkit : chromium).launch(name === 'chromium' ? { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] } : {});
+const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+const errs = []; p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error' && !/fonts\.g/.test(m.text())) errs.push(m.text()); });
+await p.goto('http://127.0.0.1:8787');
+await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
+await p.goto('http://127.0.0.1:8787'); await p.waitForSelector('.card');
+await p.locator('.card').first().click(); await p.waitForSelector('.player.show');
+await p.locator('.player .info').click(); await p.waitForSelector('.now.show');
+await p.waitForTimeout(12000);
+await p.screenshot({ path: `${OUT}/nebula-${name}.png` });
+await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.visibility = 'hidden'; });
+await p.screenshot({ path: `${OUT}/nebula-raw-${name}.png` });
+await p.evaluate(() => { document.querySelector<HTMLElement>('.now-in').style.visibility = ''; });
+const size = await p.evaluate(() => { const c = document.querySelector<HTMLCanvasElement>('.nebula'); return [c.width, c.height, c.getBoundingClientRect().height]; });
+assert.ok(size[0] >= 195 && size[1] >= 422, `canvas not sized ${size}`);
+assert.equal(size[2], 844, 'backdrop must cover the screen');
+// Queue: picking a song must keep the whole list.
+await p.getByRole('button', { name: 'Navbat' }).click();
+const rows = () => p.locator('.queue .tr').count();
+const before = await rows();
+assert.ok(before >= 2, `queue ${before}`);
+await p.locator('.queue .tr').nth(before - 1).click();
+await p.waitForTimeout(1500);
+assert.equal(await rows(), before, 'queue lost songs after choosing one');
+assert.equal(await p.locator('.queue .tr.cur').count(), 1);
+console.log('  ok queue keeps', before, 'songs');
+await p.getByRole('button', { name: 'Yopish' }).click();
+assert.deepEqual(errs, []);
+// Logo: moves with the music without jumps, and eases back to its exact resting shape after pause.
+await p.setViewportSize({ width: 1200, height: 800 });
+await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+const REST = [80, 220, 320, 160, 60];
+const bars = () => p.evaluate(() => [...document.querySelector('.side .logo-mark g').children].map(r => Number(r.getAttribute('height'))));
+assert.deepEqual(await bars(), REST, 'logo must start in its resting shape');
+await p.locator('.card').first().click(); await p.waitForTimeout(600);
+const trace = await p.evaluate(() => new Promise<number[][]>(res => { const out: number[][] = []; const t0 = performance.now(); const f = () => { out.push([...document.querySelector('.side .logo-mark g').children].map(r => Number(r.getAttribute('height')))); performance.now() - t0 < 2500 ? requestAnimationFrame(f) : res(out); }; f(); }));
+const moved = trace.some(fr => fr.some((v, i) => Math.abs(v - REST[i]) > 20));
+assert.ok(moved, 'logo did not react while playing');
+await p.keyboard.press('Escape');
+await p.locator('.player .center .playbtn').click(); await p.waitForTimeout(2500);
+const after = await bars();
+after.forEach((v, i) => assert.ok(Math.abs(v - REST[i]) <= 1, `bar ${i} did not return: ${v}`));
+console.log('  ok logo reacts and eases back to rest');
+await p.setViewportSize({ width: 390, height: 844 });
+// New song: a brand-new account sees it once, at its place on the home page.
+await p.evaluate(() => fetch('/api/auth/logout', { method: 'POST' }));
+const fresh = await b.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' }); // network stubs cannot see through a service worker in WebKit
+const q = await fresh.newPage();
+await q.goto('http://127.0.0.1:8787/');
+await q.evaluate(async email => { await fetch('/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Yangi', email, password: 'parol12345' }) }); }, `spot${Date.now()}@test.uz`);
+const newest = await q.evaluate(async () => (await (await fetch('/api/home')).json()).fresh[0]);
+if (Date.now() / 1000 - newest.createdAt < 7 * 86400) {
+  await q.goto('http://127.0.0.1:8787/');
+  await q.waitForSelector('.card.spotlight', { timeout: 6000 });
+  assert.equal(await q.locator('.card.spotlight').getAttribute('data-track'), newest.id);
+  assert.equal(await q.locator('.card.spotlight .new-tag').count(), 1);
+  await q.waitForTimeout(1200);
+  await q.screenshot({ path: `${OUT}/spotlight-${name}.png` });
+  await q.waitForTimeout(800);
+  await q.goto('http://127.0.0.1:8787/'); await q.waitForTimeout(2500);
+  assert.equal(await q.locator('.card.spotlight').count(), 0, 'announcement must show only once');
+  console.log('  ok new song announced once');
+} else console.log('  skipped new song check, local catalogue is old');
+// Pages: a second visit opens with the server stalled, and new data replaces the old on its own.
+await q.waitForTimeout(800);
+await q.locator('.tabs a', { hasText: 'Tariflar' }).click(); await q.waitForSelector('.plan');
+await q.locator('.tabs a', { hasText: 'Bosh sahifa' }).click(); await q.waitForSelector('.card');
+await q.waitForTimeout(16000); // past the freshness window, so the next visit revalidates
+let hold: () => void = () => {};
+await q.route('**/api/plans', async route => { await new Promise<void>(r => { hold = r; }); const res = await route.fetch(); const j = await res.json(); j.plans[0].name = 'YangilanganTarif'; await route.fulfill({ response: res, json: j }); });
+const t0 = Date.now();
+await q.locator('.tabs a', { hasText: 'Tariflar' }).click(); await q.waitForSelector('.plan');
+const open = Date.now() - t0;
+assert.ok(open < 800, `page waited for the network: ${open} ms`);
+assert.equal(await q.getByText('YangilanganTarif').count(), 0);
+hold();
+await q.getByText('YangilanganTarif').waitFor({ timeout: 5000 });
+console.log(`  ok page opened in ${open} ms with the server stalled, then new data replaced the old`);
+await fresh.close();
+await p.goto('http://127.0.0.1:8787/');
+await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
+await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+// Tab bar: holding and sliding must not navigate until release.
+await p.goto('http://127.0.0.1:8787/'); await p.waitForSelector('.card');
+const box = async name => p.locator('.tabs a', { hasText: name }).boundingBox();
+const home = await box('Bosh sahifa'), lib = await box('Kutubxona'), plans = await box('Tariflar');
+const pillX = () => p.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.tab-pill')).transform).m41);
+await p.mouse.move(home.x + home.width / 2, home.y + home.height / 2); await p.mouse.down();
+await p.mouse.move(lib.x + lib.width / 2, lib.y + 10, { steps: 6 }); await p.waitForTimeout(400);
+assert.equal(new URL(p.url()).pathname, '/', 'section changed while holding');
+const midX = await pillX(); assert.ok(Math.abs(midX - lib.x) < lib.width, `pill did not follow: ${midX} vs ${lib.x}`);
+await p.mouse.move(plans.x + plans.width / 2, plans.y + 10, { steps: 4 }); await p.waitForTimeout(200);
+assert.equal(new URL(p.url()).pathname, '/');
+await p.mouse.up(); await p.waitForTimeout(500);
+assert.equal(new URL(p.url()).pathname, '/premium', 'release must open the section under the finger');
+await p.locator('.tabs a', { hasText: 'Qidiruv' }).click(); await p.waitForTimeout(300);
+assert.equal(new URL(p.url()).pathname, '/search', 'plain tap must still work');
+console.log('  ok tab bar: hold keeps section, release and tap navigate');
+await b.close();
+console.log(name, 'nebula ok', size.join('x'));

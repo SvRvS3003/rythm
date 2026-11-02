@@ -1,4 +1,4 @@
-// JavaScript, test/android.mjs, node + adb: drives the real APK against production. Reads .prod.vars, never prints it.
+// JavaScript, test/android.ts, node + adb: drives the real APK against production. Reads .prod.vars, never prints it.
 // Needs a booted emulator with 1.0.0 installed and dist/SvRvS-Rythm-1.0.2.apk built. Publishes 1.0.2 as the live release.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +12,7 @@ const adb = (...a) => execFileSync(ADB, a, { encoding: 'utf8', maxBuffer: 1 << 2
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const vars = readFileSync('.prod.vars', 'utf8'), pass = vars.match(/ADMIN_PASSWORD=(.*)/)[1].trim(), login = vars.match(/ADMIN_LOGIN=(.*)/)[1].trim();
 let cookie = '';
-const api = async (path, { method = 'GET', body, raw } = {}) => {
+const api = async (path, { method = 'GET', body, raw }: any = {}) => {
   const r = await fetch(BASE + path, { method, headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
   const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0];
   const d = await r.json().catch(() => ({}));
@@ -21,14 +21,14 @@ const api = async (path, { method = 'GET', body, raw } = {}) => {
 };
 const dump = () => { try { adb('shell', 'uiautomator', 'dump', '/sdcard/u.xml'); return adb('shell', 'cat', '/sdcard/u.xml'); } catch { return ''; } };
 const nodes = xml => [...xml.matchAll(/<node [^>]*>/g)].map(m => { const a = m[0]; const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(a).slice(1).map(Number); return { text: /text="([^"]*)"/.exec(a)?.[1] || '', desc: /content-desc="([^"]*)"/.exec(a)?.[1] || '', cls: /class="([^"]*)"/.exec(a)?.[1] || '', x: (b[0] + b[2]) >> 1, y: (b[1] + b[3]) >> 1 }; });
-async function find(pred, label, ms = 45000) {
+async function find(pred: (n: any) => boolean, label: string, ms = 45000): Promise<any> {
   const end = Date.now() + ms;
   while (Date.now() < end) { const n = nodes(dump()).find(pred); if (n) return n; await wait(1500); }
   shot(`missing-${label}`);
   throw new Error(`not on screen: ${label}`);
 }
 const byText = t => n => n.text === t || n.desc === t;
-const tap = async (t, ms) => { const n = await find(byText(t), t, ms); adb('shell', 'input', 'tap', String(n.x), String(n.y)); await wait(700); };
+const tap = async (t: string, ms?: number) => { const n = await find(byText(t), t, ms); adb('shell', 'input', 'tap', String(n.x), String(n.y)); await wait(700); };
 const shot = name => writeFileSync(join(OUT, `${name}.png`), execFileSync(ADB, ['exec-out', 'screencap', '-p'], { maxBuffer: 1 << 26 }));
 const session = () => adb('shell', 'dumpsys', 'media_session');
 const state = () => { const m = /package=uz\.svrvs\.rythm[\s\S]*?state=PlaybackState \{state=(\w+)[\s\S]*?metadata:[^\n]*description=([^\n]*)/.exec(session()); return m ? { state: m[1], desc: m[2] } : null; };

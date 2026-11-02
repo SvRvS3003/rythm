@@ -1,4 +1,4 @@
-// JavaScript, test/ios.mjs, node + playwright: glass only on iOS, and floating bars never hide content. Usage: node test/ios.mjs [outDir]
+// JavaScript, test/ios.ts, node + playwright: glass only on iOS, and floating bars never hide content. Usage: node test/ios.ts [outDir]
 import { webkit } from 'playwright';
 import assert from 'node:assert/strict';
 const BASE = 'http://127.0.0.1:8787', OUT = process.argv[2] || 'dist/shots';
@@ -12,8 +12,8 @@ const open = async (ua, w, h) => {
   await p.goto(BASE); await p.waitForSelector('.card');
   return p;
 };
-const blur = (p, sel) => p.evaluate(s => { const c = getComputedStyle(document.querySelector(s)); return c.backdropFilter || c.webkitBackdropFilter || 'none'; }, sel);
-for (const [name, ua, on] of [['android', ANDROID, false], ['desktop', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15', false]]) {
+const blur = (p, sel) => p.evaluate(s => { const c = getComputedStyle(document.querySelector(s)); return c.backdropFilter || (c as any).webkitBackdropFilter || 'none'; }, sel);
+for (const [name, ua, on] of [['android', ANDROID, false], ['desktop', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15', false]] as [string, string, boolean][]) {
   const p = await open(ua, 1000, 800);
   assert.equal(await p.evaluate(() => document.documentElement.classList.contains('ios')), on, name);
   console.log(`  ok ${name}: no glass`);

@@ -1,9 +1,10 @@
 {
   "name": "rythm",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
+  "build": { "command": "node scripts/build.ts", "watch_dir": ["client", "web"] },
   "assets": {
-    "directory": "./public",
+    "directory": "./dist/web",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/media/*", "/dl/*"]

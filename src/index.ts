@@ -1,5 +1,12 @@
-// JavaScript, src/index.js, Cloudflare Workers runtime: API, R2 streaming, admin.
-import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.js';
+// TypeScript, src/index.ts, Cloudflare Workers runtime: API, R2 streaming, admin.
+import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.ts';
+
+export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string }
+// SQL rows are shaped by the query text beside each call, so they stay loosely typed.
+type Row = Record<string, any>;
+type Guard = 'user' | 'admin' | null;
+interface Ctx { params: Record<string, string>; user: Row }
+type Handler = (req: Request, env: Env, ctx: Ctx) => Promise<Response> | Response;
 
 const now = () => Math.floor(Date.now() / 1000);
 const uid = () => crypto.randomUUID().replaceAll('-', '');
@@ -7,78 +14,82 @@ const DAY = 86400;
 const PART_SIZE = 20 * 1024 * 1024; // Worker request limit is 100 MB; big WAVs go through R2 multipart.
 
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
 }
-const fail = (status, message) => { throw new HttpError(status, message); };
-const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers } });
+const fail = (status: number, message: string): never => { throw new HttpError(status, message); };
+const json = (data: unknown, status = 200, headers: Record<string, string> = {}): Response => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers } });
 
-const all = async (env, sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
-const first = (env, sql, ...a) => env.DB.prepare(sql).bind(...a).first();
-const run = (env, sql, ...a) => env.DB.prepare(sql).bind(...a).run();
-const st = (env, sql, ...a) => env.DB.prepare(sql).bind(...a);
+const all = async (env: Env, sql: string, ...a: unknown[]): Promise<Row[]> => (await env.DB.prepare(sql).bind(...a).all<Row>()).results;
+const first = (env: Env, sql: string, ...a: unknown[]): Promise<Row | null> => env.DB.prepare(sql).bind(...a).first<Row>();
+// For aggregates and rows already known to exist.
+const one = (env: Env, sql: string, ...a: unknown[]): Promise<Row> => env.DB.prepare(sql).bind(...a).first<Row>() as Promise<Row>;
+const run = (env: Env, sql: string, ...a: unknown[]) => env.DB.prepare(sql).bind(...a).run();
+const st = (env: Env, sql: string, ...a: unknown[]) => env.DB.prepare(sql).bind(...a);
 
-const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
-const int = (v, min, max, name = 'Qiymat') => {
+const str = (v: unknown, max = 200): string => String(v ?? '').trim().slice(0, max);
+const int = (v: unknown, min: number, max: number, name = 'Qiymat'): number => {
   const n = Number(v);
   if (!Number.isInteger(n) || n < min || n > max) fail(400, `${name} noto'g'ri`);
   return n;
 };
-const media = key => (key ? `/media/${key}` : null);
+const media = (key: string | null | undefined): string | null => (key ? `/media/${key}` : null);
 
 // ---------- routing ----------
-const routes = [];
-const route = (method, path, handler, guard = 'user') => {
-  const names = [];
-  const re = new RegExp('^' + path.replace(/:(\w+)/g, (_, n) => (names.push(n), '([^/]+)')) + '$');
+const routes: { method: string; re: RegExp; names: string[]; handler: Handler; guard: Guard }[] = [];
+const route = (method: string, path: string, handler: Handler, guard: Guard = 'user') => {
+  const names: string[] = [];
+  const re = new RegExp('^' + path.replace(/:(\w+)/g, (_, n: string) => (names.push(n), '([^/]+)')) + '$');
   routes.push({ method, re, names, handler, guard });
 };
 
-async function body(req) {
+async function body(req: Request): Promise<any> {
   try { return await req.json(); } catch { fail(400, "So'rov noto'g'ri"); }
 }
 
 // ---------- auth ----------
 const cookieName = 'rythm_session';
-function sessionCookie(req, token, maxAge) {
+function sessionCookie(req: Request, token: string, maxAge: number): string {
   const secure = new URL(req.url).protocol === 'https:' ? ' Secure;' : '';
   return `${cookieName}=${token}; Path=/; HttpOnly;${secure} SameSite=Lax; Max-Age=${maxAge}`;
 }
-async function startSession(env, req, userId) {
+async function startSession(env: Env, req: Request, userId: string): Promise<string> {
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));
   await run(env, 'INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)', await sha256(token), userId, now() + 60 * DAY);
   return sessionCookie(req, token, 60 * DAY);
 }
-async function currentUser(env, req) {
+async function currentUser(env: Env, req: Request): Promise<Row | null> {
   const m = new RegExp(`${cookieName}=([0-9a-f]{64})`).exec(req.headers.get('cookie') || '');
   if (!m) return null;
   return first(env, 'SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.banned=0', await sha256(m[1]), now());
 }
-async function limited(env, key, max, windowSec) {
-  const row = await first(env, 'SELECT COUNT(*) c FROM attempts WHERE k=? AND at>?', key, now() - windowSec);
-  if (row.c >= max) fail(429, "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring.");
+async function limited(env: Env, key: string, max: number, windowSec: number): Promise<void> {
+  const row = await one(env, 'SELECT COUNT(*) c FROM attempts WHERE k=? AND at>?', key, now() - windowSec);
+  if (row!.c >= max) fail(429, "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring.");
 }
-const note = (env, key) => run(env, 'INSERT INTO attempts (k,at) VALUES (?,?)', key, now());
-const ip = req => req.headers.get('cf-connecting-ip') || 'local';
+const note = (env: Env, key: string) => run(env, 'INSERT INTO attempts (k,at) VALUES (?,?)', key, now());
+const ip = (req: Request): string => req.headers.get('cf-connecting-ip') || 'local';
 
 // Per-isolate read cache: hot, rarely changing reads stop reaching the single D1 primary.
-const memoStore = new Map();
-async function memo(key, ttlSec, fn) {
+const memoStore = new Map<string, { val: any; exp: number }>();
+async function memo<T>(key: string, ttlSec: number, fn: () => Promise<T>): Promise<T> {
   const hit = memoStore.get(key);
   if (hit && hit.exp > Date.now()) return hit.val;
   const val = await fn();
   memoStore.set(key, { val, exp: Date.now() + ttlSec * 1000 });
   return val;
 }
-const liveSettings = env => memo('settings', 10, () => settings(env));
+const liveSettings = (env: Env) => memo('settings', 10, () => settings(env));
 
-async function settings(env) {
-  const out = {};
+async function settings(env: Env): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
   for (const r of await all(env, 'SELECT key,value FROM settings')) out[r.key] = r.value;
   return out;
 }
 
 // Plan off, exempt list and admins all mean: no ads, no paywall.
-async function entitlement(env, u, s) {
+type Entitlement = { premium: boolean; reason: string; planId?: string; expires?: number };
+async function entitlement(env: Env, u: Row, s: Record<string, string>): Promise<Entitlement> {
   if (s.plans_enabled !== '1') return { premium: true, reason: 'plans_off' };
   if (u.role === 'admin') return { premium: true, reason: 'admin' };
   if (u.plan_exempt) return { premium: true, reason: 'exempt' };
@@ -89,15 +100,15 @@ async function entitlement(env, u, s) {
   }
   return { premium: false, reason: 'free' };
 }
-const publicUser = (u, e) => ({ id: u.id, name: u.name, email: u.email, role: u.role, entitlement: e });
-const publicSettings = s => ({ siteName: s.site_name, heroTitle: s.hero_title, heroSub: s.hero_sub, plansEnabled: s.plans_enabled === '1', supportUrl: s.support_url });
+const publicUser = (u: Row, e: Entitlement) => ({ id: u.id, name: u.name, email: u.email, role: u.role, entitlement: e, seenTrackAt: u.seen_track_at });
+const publicSettings = (s: Record<string, string>) => ({ siteName: s.site_name, heroTitle: s.hero_title, heroSub: s.hero_sub, plansEnabled: s.plans_enabled === '1', supportUrl: s.support_url });
 
 route('POST', '/api/auth/register', async (req, env) => {
   await limited(env, `reg:${ip(req)}`, 20, 3600);
   const b = await body(req);
   const email = str(b.email, 120).toLowerCase(), name = str(b.name, 60), password = String(b.password ?? '');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, "Email noto'g'ri");
-  if (!name) fail(400, 'Ismingizni kiriting');
+  if (!name) return fail(400, 'Ismingizni kiriting');
   if (password.length < 8 || password.length > 200) fail(400, "Parol kamida 8 belgi bo'lsin");
   await note(env, `reg:${ip(req)}`);
   if (await first(env, 'SELECT id FROM users WHERE email=?', email)) fail(409, "Bu email allaqachon ro'yxatdan o'tgan");
@@ -120,7 +131,7 @@ route('POST', '/api/auth/login', async (req, env) => {
   }
   const u = await first(env, 'SELECT * FROM users WHERE email=?', email);
   const ok = u && u.pass_hash && safeEqual((await hashPassword(password, u.pass_salt)).hash, u.pass_hash);
-  if (!ok) { await note(env, key); fail(401, "Login yoki parol noto'g'ri"); }
+  if (!u || !ok) { await note(env, key); return fail(401, "Login yoki parol noto'g'ri"); }
   if (u.banned) fail(403, 'Akkaunt bloklangan');
   return json({ ok: true }, 200, { 'set-cookie': await startSession(env, req, u.id) });
 }, null);
@@ -139,21 +150,27 @@ route('GET', '/api/me', async (req, env) => {
   return json({ user: publicUser(u, await entitlement(env, u, s)), settings: publicSettings(s) });
 }, null);
 
+// Remembered per account, so a new-song announcement plays once per person across all their devices.
+route('POST', '/api/me/seen', async (req, env, { user }) => {
+  await run(env, 'UPDATE users SET seen_track_at=MAX(seen_track_at,?) WHERE id=?', int((await body(req)).at, 0, now(), 'Vaqt'), user.id);
+  return json({ ok: true });
+});
+
 route('PATCH', '/api/me', async (req, env, { user }) => {
   const b = await body(req);
   const name = str(b.name, 60);
-  if (!name) fail(400, 'Ismingizni kiriting');
+  if (!name) return fail(400, 'Ismingizni kiriting');
   await run(env, 'UPDATE users SET name=? WHERE id=?', name, user.id);
   return json({ ok: true });
 });
 
 // ---------- catalogue ----------
-const TRACK_SQL = `SELECT t.id,t.title,t.artist_id,a.name artist,t.album_id,al.title album,t.genre,t.duration,t.sample_rate,t.bit_depth,t.channels,t.play_count,t.promoted,t.promo_text,t.published,t.created_at,COALESCE(t.cover_key,al.cover_key,a.image_key) cover_key
+const TRACK_SQL = `SELECT t.id,t.title,t.artist_id,a.name artist,t.album_id,al.title album,t.genre,t.duration,t.sample_rate,t.bit_depth,t.channels,t.play_count,t.promoted,t.promo_text,t.published,t.created_at,t.rhythm_key,COALESCE(t.cover_key,al.cover_key,a.image_key) cover_key
   FROM tracks t JOIN artists a ON a.id=t.artist_id LEFT JOIN albums al ON al.id=t.album_id`;
-const mapTrack = t => ({ id: t.id, title: t.title, artistId: t.artist_id, artist: t.artist, albumId: t.album_id, album: t.album, genre: t.genre, duration: t.duration, sampleRate: t.sample_rate, bitDepth: t.bit_depth, channels: t.channels, plays: t.play_count, promoted: !!t.promoted, promoText: t.promo_text, published: !!t.published, cover: media(t.cover_key), createdAt: t.created_at });
-const tracks = async (env, where, ...a) => (await all(env, `${TRACK_SQL} ${where}`, ...a)).map(mapTrack);
-const mapAlbum = a => ({ id: a.id, title: a.title, artistId: a.artist_id, artist: a.artist, year: a.year, cover: media(a.cover_key) });
-const mapArtist = a => ({ id: a.id, name: a.name, bio: a.bio, image: media(a.image_key) });
+const mapTrack = (t: Row) => ({ id: t.id, title: t.title, artistId: t.artist_id, artist: t.artist, albumId: t.album_id, album: t.album, genre: t.genre, duration: t.duration, sampleRate: t.sample_rate, bitDepth: t.bit_depth, channels: t.channels, plays: t.play_count, promoted: !!t.promoted, promoText: t.promo_text, published: !!t.published, cover: media(t.cover_key), createdAt: t.created_at, rhythm: media(t.rhythm_key) });
+const tracks = async (env: Env, where: string, ...a: unknown[]) => (await all(env, `${TRACK_SQL} ${where}`, ...a)).map(mapTrack);
+const mapAlbum = (a: Row) => ({ id: a.id, title: a.title, artistId: a.artist_id, artist: a.artist, year: a.year, cover: media(a.cover_key) });
+const mapArtist = (a: Row) => ({ id: a.id, name: a.name, bio: a.bio, image: media(a.image_key) });
 const ALBUM_SQL = 'SELECT al.*,a.name artist FROM albums al JOIN artists a ON a.id=al.artist_id';
 
 route('GET', '/api/home', async (req, env, { user }) => {
@@ -193,14 +210,14 @@ route('GET', '/api/genres/:name', async (req, env, { params }) => json({ name: p
 
 route('GET', '/api/tracks/:id', async (req, env, { params }) => {
   const [t] = await tracks(env, 'WHERE t.id=? AND t.published=1', params.id);
-  if (!t) fail(404, 'Qo\'shiq topilmadi');
-  const row = await first(env, 'SELECT lyrics FROM tracks WHERE id=?', params.id);
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
+  const row = await one(env, 'SELECT lyrics FROM tracks WHERE id=?', params.id);
   return json({ ...t, lyrics: row.lyrics });
 });
 
 route('GET', '/api/artists/:id', async (req, env, { params }) => {
   const a = await first(env, 'SELECT * FROM artists WHERE id=?', params.id);
-  if (!a) fail(404, 'Ijrochi topilmadi');
+  if (!a) return fail(404, 'Ijrochi topilmadi');
   const [top, albums] = await Promise.all([
     tracks(env, 'WHERE t.published=1 AND t.artist_id=? ORDER BY t.play_count DESC LIMIT 50', params.id),
     all(env, `${ALBUM_SQL} WHERE al.artist_id=? ORDER BY al.year DESC`, params.id),
@@ -210,7 +227,7 @@ route('GET', '/api/artists/:id', async (req, env, { params }) => {
 
 route('GET', '/api/albums/:id', async (req, env, { params }) => {
   const a = await first(env, `${ALBUM_SQL} WHERE al.id=?`, params.id);
-  if (!a) fail(404, 'Albom topilmadi');
+  if (!a) return fail(404, 'Albom topilmadi');
   return json({ ...mapAlbum(a), tracks: await tracks(env, 'WHERE t.published=1 AND t.album_id=? ORDER BY t.created_at', params.id) });
 });
 
@@ -236,19 +253,19 @@ route('GET', '/api/library', async (req, env, { user }) => {
 });
 route('POST', '/api/playlists', async (req, env, { user }) => {
   const name = str((await body(req)).name, 80);
-  if (!name) fail(400, 'Pleylist nomini kiriting');
+  if (!name) return fail(400, 'Pleylist nomini kiriting');
   const id = uid();
   await run(env, 'INSERT INTO playlists (id,user_id,name,created_at) VALUES (?,?,?,?)', id, user.id, name, now());
   return json({ id, name }, 201);
 });
-async function ownedPlaylist(env, id, user) {
+async function ownedPlaylist(env: Env, id: string, user: Row): Promise<Row> {
   const p = await first(env, 'SELECT * FROM playlists WHERE id=?', id);
-  if (!p || p.user_id !== user.id) fail(404, 'Pleylist topilmadi');
+  if (!p || p.user_id !== user.id) return fail(404, 'Pleylist topilmadi');
   return p;
 }
 route('GET', '/api/playlists/:id', async (req, env, { user, params }) => {
   const p = await first(env, 'SELECT * FROM playlists WHERE id=?', params.id);
-  if (!p || (p.user_id !== user.id && !p.public)) fail(404, 'Pleylist topilmadi');
+  if (!p || (p.user_id !== user.id && !p.public)) return fail(404, 'Pleylist topilmadi');
   return json({
     id: p.id, name: p.name, public: !!p.public, mine: p.user_id === user.id,
     tracks: await tracks(env, 'JOIN playlist_tracks x ON x.track_id=t.id WHERE x.playlist_id=? AND t.published=1 ORDER BY x.added_at', p.id),
@@ -258,7 +275,7 @@ route('PATCH', '/api/playlists/:id', async (req, env, { user, params }) => {
   const p = await ownedPlaylist(env, params.id, user);
   const b = await body(req);
   const name = b.name === undefined ? p.name : str(b.name, 80);
-  if (!name) fail(400, 'Pleylist nomini kiriting');
+  if (!name) return fail(400, 'Pleylist nomini kiriting');
   // Public playlists appear on everyone's home page, so only the admin can publish.
   const pub = user.role === 'admin' && b.public !== undefined ? (b.public ? 1 : 0) : p.public;
   await run(env, 'UPDATE playlists SET name=?,public=? WHERE id=?', name, pub, p.id);
@@ -283,14 +300,14 @@ route('DELETE', '/api/playlists/:id/tracks/:track', async (req, env, { user, par
 });
 
 // ---------- playback ----------
-const streamSig = (env, trackId, userId, exp) => hmac(env.SIGNING_SECRET, `${trackId}.${userId}.${exp}`);
+const streamSig = (env: Env, trackId: string, userId: string, exp: number) => hmac(env.SIGNING_SECRET, `${trackId}.${userId}.${exp}`);
 
 // Ads are decided here, not in the client: without a completed ad view no stream URL is issued.
 route('POST', '/api/play', async (req, env, { user }) => {
   const b = await body(req);
   const trackId = str(b.trackId, 40);
   const t = await first(env, 'SELECT id,duration FROM tracks WHERE id=? AND published=1', trackId);
-  if (!t) fail(404, 'Qo\'shiq topilmadi');
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
   const s = await liveSettings(env);
   const e = await entitlement(env, user, s);
   const every = Number(s.ad_every) || 0;
@@ -321,7 +338,7 @@ route('POST', '/api/plays/:id/counted', async (req, env, { user, params }) => {
   const started = Number(startedRaw);
   if (!sig || !safeEqual(sig, await hmac(env.SIGNING_SECRET, `play.${trackId}.${user.id}.${startedRaw}`))) fail(404, 'Topilmadi');
   const t = await first(env, 'SELECT duration FROM tracks WHERE id=?', trackId);
-  if (!t) fail(404, 'Topilmadi');
+  if (!t) return fail(404, 'Topilmadi');
   if (now() - started < Math.min(30, t.duration / 2) - 2) return json({ counted: false });
   // The signature is the row id, so a repeated report cannot count twice.
   const r = await run(env, 'INSERT OR IGNORE INTO plays (id,user_id,track_id,started_at,counted) VALUES (?,?,?,?,1)', sig, user.id, trackId, started);
@@ -331,7 +348,7 @@ route('POST', '/api/plays/:id/counted', async (req, env, { user, params }) => {
 
 route('POST', '/api/ads/:view/complete', async (req, env, { user, params }) => {
   const v = await first(env, 'SELECT * FROM ad_views WHERE id=? AND user_id=?', params.view, user.id);
-  if (!v) fail(404, 'Topilmadi');
+  if (!v) return fail(404, 'Topilmadi');
   if (now() - v.started_at < v.duration - 2) fail(409, 'Reklama hali tugamadi');
   await env.DB.batch([
     st(env, 'UPDATE ad_views SET completed=1 WHERE id=?', v.id),
@@ -346,7 +363,7 @@ route('POST', '/api/ads/:view/click', async (req, env, { user, params }) => {
 });
 
 // ---------- plans & payments ----------
-const mapPlan = p => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort });
+const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort });
 
 route('GET', '/api/plans', async (req, env, { user }) => {
   const s = await settings(env);
@@ -360,7 +377,7 @@ route('GET', '/api/plans', async (req, env, { user }) => {
 route('POST', '/api/payments', async (req, env, { user }) => {
   const b = await body(req);
   const plan = await first(env, 'SELECT * FROM plans WHERE id=? AND active=1', str(b.planId, 40));
-  if (!plan) fail(404, 'Tarif topilmadi');
+  if (!plan) return fail(404, 'Tarif topilmadi');
   const reference = str(b.reference, 120);
   if (reference.length < 3) fail(400, 'To\'lov ma\'lumotini kiriting (chek raqami yoki karta oxirgi 4 raqami)');
   if (await first(env, "SELECT id FROM payments WHERE user_id=? AND status='pending'", user.id)) fail(409, 'Oldingi so\'rovingiz hali ko\'rib chiqilmoqda');
@@ -370,10 +387,10 @@ route('POST', '/api/payments', async (req, env, { user }) => {
 route('POST', '/api/family', async (req, env, { user }) => {
   if (user.plan_expires <= now()) fail(403, 'Faol tarif kerak');
   const plan = await first(env, 'SELECT seats FROM plans WHERE id=?', user.plan_id);
-  const taken = await first(env, 'SELECT COUNT(*) c FROM users WHERE family_owner_id=?', user.id);
-  if (!plan || taken.c + 1 >= plan.seats) fail(409, "Tarifda bo'sh joy qolmadi");
+  const taken = await one(env, 'SELECT COUNT(*) c FROM users WHERE family_owner_id=?', user.id);
+  if (!plan || taken.c + 1 >= plan.seats) return fail(409, "Tarifda bo'sh joy qolmadi");
   const m = await first(env, 'SELECT id,family_owner_id FROM users WHERE email=? AND id<>?', str((await body(req)).email, 120), user.id);
-  if (!m) fail(404, "Bu email bilan foydalanuvchi topilmadi. Avval ro'yxatdan o'tsin.");
+  if (!m) return fail(404, "Bu email bilan foydalanuvchi topilmadi. Avval ro'yxatdan o'tsin.");
   if (m.family_owner_id) fail(409, "Bu foydalanuvchi boshqa tarifga qo'shilgan");
   await run(env, 'UPDATE users SET family_owner_id=? WHERE id=?', user.id, m.id);
   return json({ ok: true });
@@ -384,7 +401,7 @@ route('DELETE', '/api/family/:id', async (req, env, { user, params }) => {
 });
 
 // ---------- media ----------
-async function serveObject(env, req, key, contentType, extra = {}) {
+async function serveObject(env: Env, req: Request, key: string, contentType: string, extra: Record<string, string> = {}): Promise<Response> {
   const head = await env.BUCKET.head(key);
   if (!head) return new Response('Topilmadi', { status: 404 });
   const base = { 'content-type': contentType, 'accept-ranges': 'bytes', etag: head.httpEtag, 'x-content-type-options': 'nosniff', ...extra };
@@ -398,7 +415,7 @@ async function serveObject(env, req, key, contentType, extra = {}) {
   const obj = isHead ? null : await env.BUCKET.get(key, { range });
   return new Response(obj?.body ?? null, { status: 206, headers: { ...base, 'content-length': String(range.length), 'content-range': `bytes ${range.offset}-${range.offset + range.length - 1}/${head.size}` } });
 }
-async function handleMedia(req, env, url) {
+async function handleMedia(req: Request, env: Env, url: URL): Promise<Response> {
   const stream = /^\/media\/stream\/([0-9a-f]{32})$/.exec(url.pathname);
   if (stream) {
     const q = url.searchParams, exp = Number(q.get('e')), u = q.get('u') || '';
@@ -406,17 +423,17 @@ async function handleMedia(req, env, url) {
     if (!good) return new Response('Havola eskirgan', { status: 403 });
     const t = await first(env, 'SELECT audio_key FROM tracks WHERE id=?', stream[1]);
     if (!t) return new Response('Topilmadi', { status: 404 });
-    return serveObject(env, req, t.audio_key, 'audio/wav', { 'cache-control': 'private, max-age=3600' });
+    return serveObject(env, req, t.audio_key, 'audio/wav', { 'cache-control': 'private, max-age=3600, no-transform' }); // no-transform: no proxy or carrier may recompress the WAV
   }
-  const pub = /^\/media\/((covers|adaudio|apk)\/[0-9a-f]{32}\.(jpg|png|webp|wav|apk))$/.exec(url.pathname);
+  const pub = /^\/media\/((covers|adaudio|apk|rhythm)\/[0-9a-f]{32}\.(jpg|png|webp|wav|apk|bin))$/.exec(url.pathname);
   if (!pub) return new Response('Topilmadi', { status: 404 });
-  const types = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', wav: 'audio/wav', apk: 'application/vnd.android.package-archive' };
-  const extra = pub[3] === 'apk' ? { 'content-disposition': 'attachment; filename="SvRvS-Rythm.apk"', 'cache-control': 'public, max-age=3600' } : { 'cache-control': 'public, max-age=31536000, immutable' };
+  const types: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', wav: 'audio/wav', apk: 'application/vnd.android.package-archive', bin: 'application/octet-stream' };
+  const extra: Record<string, string> = pub[3] === 'apk' ? { 'content-disposition': 'attachment; filename="SvRvS-Rythm.apk"', 'cache-control': 'public, max-age=3600' } : { 'cache-control': 'public, max-age=31536000, immutable' };
   return serveObject(env, req, pub[1], types[pub[3]], extra);
 }
 
 // ---------- install ----------
-async function mobileconfig(req, env) {
+async function mobileconfig(req: Request, env: Env): Promise<Response> {
   const s = await settings(env);
   const origin = new URL(req.url).origin;
   const icon = await env.ASSETS.fetch(new Request(`${origin}/icon-512.png`));
@@ -438,8 +455,8 @@ async function mobileconfig(req, env) {
 </dict></plist>`;
   return new Response(plist, { headers: { 'content-type': 'application/x-apple-aspen-config', 'content-disposition': 'attachment; filename="SvRvS-Rythm.mobileconfig"' } });
 }
-const latestRelease = env => first(env, 'SELECT * FROM releases ORDER BY version_code DESC LIMIT 1');
-const mapRelease = r => r && ({ id: r.id, versionCode: r.version_code, versionName: r.version_name, notes: r.notes, url: media(r.apk_key), size: r.size, sha256: r.sha256, force: !!r.force, createdAt: r.created_at });
+const latestRelease = (env: Env) => first(env, 'SELECT * FROM releases ORDER BY version_code DESC LIMIT 1');
+const mapRelease = (r: Row | null) => r && ({ id: r.id, versionCode: r.version_code, versionName: r.version_name, notes: r.notes, url: media(r.apk_key), size: r.size, sha256: r.sha256, force: !!r.force, createdAt: r.created_at });
 
 route('GET', '/api/app/latest', async (req, env) => json({ release: mapRelease(await latestRelease(env)) }), null);
 
@@ -447,17 +464,17 @@ route('GET', '/api/app/latest', async (req, env) => json({ release: mapRelease(a
 route('GET', '/api/admin/stats', async (req, env) => {
   const t = now();
   const [users, new7, active1, active30, paid, exempt, plays, plays7, storage, pendingPay, revenue, top7, topAll, daily, signups, revenuePlans] = await Promise.all([
-    first(env, 'SELECT COUNT(*) c FROM users'),
-    first(env, 'SELECT COUNT(*) c FROM users WHERE created_at>?', t - 7 * DAY),
-    first(env, 'SELECT COUNT(*) c FROM users WHERE last_seen>?', t - DAY),
-    first(env, 'SELECT COUNT(*) c FROM users WHERE last_seen>?', t - 30 * DAY),
-    first(env, 'SELECT COUNT(*) c FROM users WHERE plan_expires>?', t),
-    first(env, 'SELECT COUNT(*) c FROM users WHERE plan_exempt=1'),
-    first(env, 'SELECT COALESCE(SUM(play_count),0) c FROM tracks'),
-    first(env, 'SELECT COUNT(*) c FROM plays WHERE counted=1 AND started_at>?', t - 7 * DAY),
-    first(env, 'SELECT COALESCE(SUM(size),0) bytes,COUNT(*) tracks,COALESCE(SUM(duration),0) seconds FROM tracks'),
-    first(env, "SELECT COUNT(*) c FROM payments WHERE status='pending'"),
-    first(env, "SELECT COALESCE(SUM(amount),0) c FROM payments WHERE status='approved' AND decided_at>?", t - 30 * DAY),
+    one(env, 'SELECT COUNT(*) c FROM users'),
+    one(env, 'SELECT COUNT(*) c FROM users WHERE created_at>?', t - 7 * DAY),
+    one(env, 'SELECT COUNT(*) c FROM users WHERE last_seen>?', t - DAY),
+    one(env, 'SELECT COUNT(*) c FROM users WHERE last_seen>?', t - 30 * DAY),
+    one(env, 'SELECT COUNT(*) c FROM users WHERE plan_expires>?', t),
+    one(env, 'SELECT COUNT(*) c FROM users WHERE plan_exempt=1'),
+    one(env, 'SELECT COALESCE(SUM(play_count),0) c FROM tracks'),
+    one(env, 'SELECT COUNT(*) c FROM plays WHERE counted=1 AND started_at>?', t - 7 * DAY),
+    one(env, 'SELECT COALESCE(SUM(size),0) bytes,COUNT(*) tracks,COALESCE(SUM(duration),0) seconds FROM tracks'),
+    one(env, "SELECT COUNT(*) c FROM payments WHERE status='pending'"),
+    one(env, "SELECT COALESCE(SUM(amount),0) c FROM payments WHERE status='approved' AND decided_at>?", t - 30 * DAY),
     all(env, `SELECT t.id,t.title,a.name artist,COUNT(*) plays FROM plays p JOIN tracks t ON t.id=p.track_id JOIN artists a ON a.id=t.artist_id WHERE p.counted=1 AND p.started_at>? GROUP BY t.id ORDER BY plays DESC LIMIT 10`, t - 7 * DAY),
     all(env, 'SELECT t.id,t.title,a.name artist,t.play_count plays FROM tracks t JOIN artists a ON a.id=t.artist_id ORDER BY t.play_count DESC LIMIT 10'),
     all(env, "SELECT date(started_at,'unixepoch') d,COUNT(*) c FROM plays WHERE counted=1 AND started_at>? GROUP BY d ORDER BY d", t - 30 * DAY),
@@ -468,7 +485,7 @@ route('GET', '/api/admin/stats', async (req, env) => {
 }, 'admin');
 
 // --- multipart WAV upload ---
-const uploadKey = key => /^(audio|adaudio)\/[0-9a-f]{32}\.wav$/.test(key) ? key : fail(400, 'Fayl kaliti noto\'g\'ri');
+const uploadKey = (key: unknown): string => typeof key === 'string' && /^(audio|adaudio)\/[0-9a-f]{32}\.wav$/.test(key) ? key : fail(400, 'Fayl kaliti noto\'g\'ri');
 
 route('POST', '/api/admin/uploads', async (req, env) => {
   const kind = (await body(req)).kind === 'adaudio' ? 'adaudio' : 'audio';
@@ -484,16 +501,16 @@ route('PUT', '/api/admin/uploads/part', async (req, env) => {
   const buf = await req.arrayBuffer();
   if (buf.byteLength > PART_SIZE) fail(413, 'Qism juda katta');
   if (n === 1) {
-    try { parseWav(new Uint8Array(buf)); } catch (e) { await up.abort().catch(() => {}); fail(415, `Faqat WAV qabul qilinadi: ${e.message}`); }
+    try { parseWav(new Uint8Array(buf)); } catch (e) { await up.abort().catch(() => {}); fail(415, `Faqat WAV qabul qilinadi: ${(e as Error).message}`); }
   }
   return json(await up.uploadPart(n, buf));
 }, 'admin');
 
-async function inspectWav(env, key) {
+async function inspectWav(env: Env, key: string) {
   const head = await env.BUCKET.head(key);
-  if (!head) fail(404, 'Fayl topilmadi');
+  if (!head) return fail(404, 'Fayl topilmadi');
   const obj = await env.BUCKET.get(key, { range: { offset: 0, length: Math.min(head.size, 4 * 1024 * 1024) } });
-  return { ...parseWav(new Uint8Array(await obj.arrayBuffer()), head.size), size: head.size };
+  return { ...parseWav(new Uint8Array(await obj!.arrayBuffer()), head.size), size: head.size };
 }
 route('POST', '/api/admin/uploads/complete', async (req, env) => {
   const b = await body(req);
@@ -503,7 +520,7 @@ route('POST', '/api/admin/uploads/complete', async (req, env) => {
   // Final gate: anything that is not a complete PCM WAV leaves the bucket here.
   try { return json({ key, ...await inspectWav(env, key) }); } catch (e) {
     await env.BUCKET.delete(key);
-    fail(415, `Faqat WAV qabul qilinadi: ${e.message}`);
+    return fail(415, `Faqat WAV qabul qilinadi: ${(e as Error).message}`);
   }
 }, 'admin');
 
@@ -511,26 +528,26 @@ route('POST', '/api/admin/images', async (req, env) => {
   const buf = await req.arrayBuffer();
   if (buf.byteLength > 8 * 1024 * 1024) fail(413, 'Rasm 8 MB dan oshmasin');
   const type = imageType(new Uint8Array(buf.slice(0, 16)));
-  if (!type) fail(415, 'Rasm JPG, PNG yoki WEBP bo\'lsin');
+  if (!type) return fail(415, 'Rasm JPG, PNG yoki WEBP bo\'lsin');
   const key = `covers/${uid()}.${type}`;
   await env.BUCKET.put(key, buf, { httpMetadata: { contentType: `image/${type === 'jpg' ? 'jpeg' : type}` } });
   return json({ key, url: media(key) }, 201);
 }, 'admin');
-const coverKey = v => {
+const coverKey = (v: unknown): string | null => {
   if (v === null || v === undefined || v === '') return null;
-  return /^covers\/[0-9a-f]{32}\.(jpg|png|webp)$/.test(v) ? v : fail(400, 'Rasm kaliti noto\'g\'ri');
+  return typeof v === 'string' && /^covers\/[0-9a-f]{32}\.(jpg|png|webp)$/.test(v) ? v : fail(400, 'Rasm kaliti noto\'g\'ri');
 };
 
-async function artistId(env, name) {
+async function artistId(env: Env, name: unknown): Promise<string> {
   const n = str(name, 100);
-  if (!n) fail(400, 'Ijrochi nomini kiriting');
+  if (!n) return fail(400, 'Ijrochi nomini kiriting');
   const found = await first(env, 'SELECT id FROM artists WHERE name=?', n);
   if (found) return found.id;
   const id = uid();
   await run(env, 'INSERT INTO artists (id,name,created_at) VALUES (?,?,?)', id, n, now());
   return id;
 }
-async function albumId(env, title, artist, cover, year) {
+async function albumId(env: Env, title: unknown, artist: string, cover: string | null, year: number | null): Promise<string | null> {
   const n = str(title, 120);
   if (!n) return null;
   const found = await first(env, 'SELECT id,cover_key FROM albums WHERE title=? AND artist_id=?', n, artist);
@@ -550,8 +567,8 @@ route('GET', '/api/admin/tracks', async (req, env) => json({
 }), 'admin');
 route('GET', '/api/admin/tracks/:id', async (req, env, { params }) => {
   const [t] = await tracks(env, 'WHERE t.id=?', params.id);
-  if (!t) fail(404, 'Qo\'shiq topilmadi');
-  const row = await first(env, 'SELECT lyrics,cover_key FROM tracks WHERE id=?', params.id);
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
+  const row = await one(env, 'SELECT lyrics,cover_key FROM tracks WHERE id=?', params.id);
   return json({ ...t, lyrics: row.lyrics, coverKey: row.cover_key });
 }, 'admin');
 
@@ -561,7 +578,7 @@ route('POST', '/api/admin/tracks', async (req, env) => {
   if (!key.startsWith('audio/')) fail(400, 'Fayl kaliti noto\'g\'ri');
   const w = await inspectWav(env, key);
   const title = str(b.title, 160);
-  if (!title) fail(400, 'Qo\'shiq nomini kiriting');
+  if (!title) return fail(400, 'Qo\'shiq nomini kiriting');
   const cover = coverKey(b.coverKey);
   const artist = await artistId(env, b.artist);
   const album = await albumId(env, b.album, artist, cover, b.year ? int(b.year, 1900, 2100, 'Yil') : null);
@@ -573,13 +590,13 @@ route('POST', '/api/admin/tracks', async (req, env) => {
 
 route('PATCH', '/api/admin/tracks/:id', async (req, env, { params }) => {
   const t = await first(env, 'SELECT * FROM tracks WHERE id=?', params.id);
-  if (!t) fail(404, 'Qo\'shiq topilmadi');
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
   const b = await body(req);
   const cover = b.coverKey === undefined ? t.cover_key : coverKey(b.coverKey);
   const artist = b.artist === undefined ? t.artist_id : await artistId(env, b.artist);
   const album = b.album === undefined ? t.album_id : await albumId(env, b.album, artist, cover, null);
   const title = b.title === undefined ? t.title : str(b.title, 160);
-  if (!title) fail(400, 'Qo\'shiq nomini kiriting');
+  if (!title) return fail(400, 'Qo\'shiq nomini kiriting');
   await run(env, 'UPDATE tracks SET title=?,artist_id=?,album_id=?,genre=?,cover_key=?,lyrics=?,published=?,promoted=?,promo_text=? WHERE id=?',
     title, artist, album, b.genre === undefined ? t.genre : str(b.genre, 60), cover, b.lyrics === undefined ? t.lyrics : str(b.lyrics, 20000),
     b.published === undefined ? t.published : (b.published ? 1 : 0), b.promoted === undefined ? t.promoted : (b.promoted ? 1 : 0),
@@ -587,17 +604,30 @@ route('PATCH', '/api/admin/tracks/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
+route('PUT', '/api/admin/tracks/:id/rhythm', async (req, env, { params }) => {
+  const t = await first(env, 'SELECT duration FROM tracks WHERE id=?', params.id);
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
+  const buf = await req.arrayBuffer();
+  // 16 bands at 20 frames per second; anything else is not a beat map for this song.
+  const frames = buf.byteLength / 16;
+  if (!Number.isInteger(frames) || Math.abs(frames / 20 - t.duration) > 1) return fail(400, 'Ritm xaritasi noto\'g\'ri');
+  const key = `rhythm/${params.id}.bin`;
+  await env.BUCKET.put(key, buf, { httpMetadata: { contentType: 'application/octet-stream' } });
+  await run(env, 'UPDATE tracks SET rhythm_key=? WHERE id=?', key, params.id);
+  return json({ ok: true });
+}, 'admin');
+
 route('DELETE', '/api/admin/tracks/:id', async (req, env, { params }) => {
-  const t = await first(env, 'SELECT audio_key FROM tracks WHERE id=?', params.id);
-  if (!t) fail(404, 'Qo\'shiq topilmadi');
+  const t = await first(env, 'SELECT audio_key,rhythm_key FROM tracks WHERE id=?', params.id);
+  if (!t) return fail(404, 'Qo\'shiq topilmadi');
   await run(env, 'DELETE FROM tracks WHERE id=?', params.id);
-  await env.BUCKET.delete(t.audio_key);
+  await env.BUCKET.delete([t.audio_key, t.rhythm_key].filter(Boolean));
   return json({ ok: true });
 }, 'admin');
 
 route('PATCH', '/api/admin/artists/:id', async (req, env, { params }) => {
   const a = await first(env, 'SELECT * FROM artists WHERE id=?', params.id);
-  if (!a) fail(404, 'Ijrochi topilmadi');
+  if (!a) return fail(404, 'Ijrochi topilmadi');
   const b = await body(req);
   await run(env, 'UPDATE artists SET name=?,bio=?,image_key=? WHERE id=?', str(b.name ?? a.name, 100) || a.name, str(b.bio ?? a.bio, 4000), b.imageKey === undefined ? a.image_key : coverKey(b.imageKey), a.id);
   return json({ ok: true });
@@ -608,13 +638,14 @@ route('GET', '/api/admin/users', async (req, env) => {
   const p = new URL(req.url).searchParams;
   const q = str(p.get('q'), 80), filter = p.get('filter');
   const like = `%${q.replace(/[\\%_]/g, c => '\\' + c)}%`;
-  const where = { exempt: 'AND u.plan_exempt=1', paid: `AND u.plan_expires>${now()}`, banned: 'AND u.banned=1' }[filter] || '';
+  const filters: Record<string, string> = { exempt: 'AND u.plan_exempt=1', paid: `AND u.plan_expires>${now()}`, banned: 'AND u.banned=1' };
+  const where = filters[filter ?? ''] || '';
   const users = await all(env, `SELECT u.id,u.email,u.name,u.role,u.banned,u.plan_exempt,u.plan_id,u.plan_expires,u.family_owner_id,u.created_at,u.last_seen,p.name plan_name FROM users u LEFT JOIN plans p ON p.id=u.plan_id WHERE (u.email LIKE ?1 ESCAPE '\\' OR u.name LIKE ?1 ESCAPE '\\') ${where} ORDER BY u.created_at DESC LIMIT 200`, like);
   return json({ users, now: now() });
 }, 'admin');
 route('PATCH', '/api/admin/users/:id', async (req, env, { params }) => {
   const u = await first(env, 'SELECT * FROM users WHERE id=?', params.id);
-  if (!u) fail(404, 'Foydalanuvchi topilmadi');
+  if (!u) return fail(404, 'Foydalanuvchi topilmadi');
   const b = await body(req);
   if (b.planExempt !== undefined) await run(env, 'UPDATE users SET plan_exempt=? WHERE id=?', b.planExempt ? 1 : 0, u.id);
   if (b.banned !== undefined) {
@@ -623,7 +654,7 @@ route('PATCH', '/api/admin/users/:id', async (req, env, { params }) => {
   }
   if (b.grantPlanId) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id=?', str(b.grantPlanId, 40));
-    if (!plan) fail(404, 'Tarif topilmadi');
+    if (!plan) return fail(404, 'Tarif topilmadi');
     await run(env, 'UPDATE users SET plan_id=?,plan_expires=? WHERE id=?', plan.id, Math.max(now(), u.plan_expires) + plan.days * DAY, u.id);
   }
   if (b.revokePlan) await env.DB.batch([st(env, 'UPDATE users SET plan_id=NULL,plan_expires=0 WHERE id=?', u.id), st(env, 'UPDATE users SET family_owner_id=NULL WHERE family_owner_id=?', u.id)]);
@@ -635,7 +666,7 @@ route('POST', '/api/admin/plans', async (req, env) => {
   const b = await body(req);
   const id = b.id ? str(b.id, 40) : uid();
   const name = str(b.name, 40);
-  if (!name) fail(400, 'Tarif nomini kiriting');
+  if (!name) return fail(400, 'Tarif nomini kiriting');
   await run(env, `INSERT INTO plans (id,name,tagline,price_uzs,days,seats,features,active,sort) VALUES (?,?,?,?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,tagline=excluded.tagline,price_uzs=excluded.price_uzs,days=excluded.days,seats=excluded.seats,features=excluded.features,active=excluded.active,sort=excluded.sort`,
     id, name, str(b.tagline, 120), int(b.price, 0, 100000000, 'Narx'), int(b.days ?? 30, 1, 3660, 'Muddat'), int(b.seats ?? 1, 1, 20, "Joylar soni"), str(b.features, 1000), b.active === false ? 0 : 1, int(b.sort ?? 0, 0, 1000, 'Tartib'));
@@ -648,29 +679,29 @@ route('GET', '/api/admin/payments', async (req, env) => json({
 route('POST', '/api/admin/payments/:id/:decision', async (req, env, { params }) => {
   if (!['approve', 'reject'].includes(params.decision)) fail(404, 'Topilmadi');
   const p = await first(env, 'SELECT p.*,pl.days FROM payments p JOIN plans pl ON pl.id=p.plan_id WHERE p.id=?', params.id);
-  if (!p) fail(404, 'To\'lov topilmadi');
+  if (!p) return fail(404, 'To\'lov topilmadi');
   // The status guard makes a double click unable to extend a plan twice.
   const r = await run(env, "UPDATE payments SET status=?,decided_at=? WHERE id=? AND status='pending'", params.decision === 'approve' ? 'approved' : 'rejected', now(), p.id);
   if (!r.meta.changes) fail(409, 'To\'lov allaqachon ko\'rib chiqilgan');
   if (params.decision === 'approve') {
-    const u = await first(env, 'SELECT plan_expires FROM users WHERE id=?', p.user_id);
+    const u = await one(env, 'SELECT plan_expires FROM users WHERE id=?', p.user_id);
     await run(env, 'UPDATE users SET plan_id=?,plan_expires=? WHERE id=?', p.plan_id, Math.max(now(), u.plan_expires) + p.days * DAY, p.user_id);
   }
   return json({ ok: true });
 }, 'admin');
 
-const httpUrl = v => {
+const httpUrl = (v: unknown): string => {
   const s = str(v, 500);
   if (!s) return '';
   if (s.startsWith('/') && !s.startsWith('//')) return s;
   try { if (['http:', 'https:'].includes(new URL(s).protocol)) return s; } catch { /* falls through */ }
-  fail(400, "Havola noto'g'ri");
+  return fail(400, "Havola noto'g'ri");
 };
 route('GET', '/api/admin/ads', async (req, env) => json({ ads: await all(env, 'SELECT * FROM ads ORDER BY created_at DESC') }), 'admin');
 route('POST', '/api/admin/ads', async (req, env) => {
   const b = await body(req);
   const title = str(b.title, 120);
-  if (!title) fail(400, 'Reklama sarlavhasini kiriting');
+  if (!title) return fail(400, 'Reklama sarlavhasini kiriting');
   let duration = int(b.duration ?? 15, 3, 60, 'Davomiylik');
   let audio = null;
   if (b.audioKey) {
@@ -688,7 +719,7 @@ route('PATCH', '/api/admin/ads/:id', async (req, env, { params }) => {
 }, 'admin');
 route('DELETE', '/api/admin/ads/:id', async (req, env, { params }) => {
   const a = await first(env, 'SELECT audio_key,image_key FROM ads WHERE id=?', params.id);
-  if (!a) fail(404, 'Topilmadi');
+  if (!a) return fail(404, 'Topilmadi');
   await run(env, 'DELETE FROM ads WHERE id=?', params.id);
   await env.BUCKET.delete([a.audio_key, a.image_key].filter(Boolean));
   return json({ ok: true });
@@ -716,7 +747,7 @@ route('GET', '/api/admin/releases', async (req, env) => json({ releases: (await 
 route('POST', '/api/admin/releases', async (req, env) => {
   const q = new URL(req.url).searchParams;
   const versionCode = int(q.get('versionCode'), 1, 2100000000, 'Versiya kodi'), versionName = str(q.get('versionName'), 30);
-  if (!versionName) fail(400, 'Versiya nomini kiriting');
+  if (!versionName) return fail(400, 'Versiya nomini kiriting');
   const latest = await latestRelease(env);
   if (latest && versionCode <= latest.version_code) fail(409, `Versiya kodi ${latest.version_code} dan katta bo'lishi kerak`);
   const buf = await req.arrayBuffer();
@@ -728,7 +759,7 @@ route('POST', '/api/admin/releases', async (req, env) => {
 }, 'admin');
 route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
   const r = await first(env, 'SELECT apk_key FROM releases WHERE id=?', params.id);
-  if (!r) fail(404, 'Topilmadi');
+  if (!r) return fail(404, 'Topilmadi');
   await run(env, 'DELETE FROM releases WHERE id=?', params.id);
   await env.BUCKET.delete(r.apk_key);
   return json({ ok: true });
@@ -736,9 +767,9 @@ route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
 
 // ---------- entry ----------
 // D1 has a hard 10 GB limit. Stats read 30 days of plays; all-time counts live on tracks.play_count.
-async function cleanup(env) {
+async function cleanup(env: Env): Promise<void> {
   const t = now();
-  const jobs = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t]];
+  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t]];
   for (const [table, col, before] of jobs) {
     for (let i = 0; i < 20; i++) {
       const r = await run(env, `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${col}<? LIMIT 20000)`, before);
@@ -748,8 +779,8 @@ async function cleanup(env) {
 }
 
 export default {
-  scheduled(event, env, ctx) { ctx.waitUntil(cleanup(env)); },
-  async fetch(req, env) {
+  scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) { ctx.waitUntil(cleanup(env)); },
+  async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
       if (url.pathname.startsWith('/media/')) {
@@ -766,13 +797,13 @@ export default {
         const m = r.re.exec(url.pathname);
         if (!m) continue;
         const params = Object.fromEntries(r.names.map((n, i) => [n, decodeURIComponent(m[i + 1])]));
-        let user = null;
+        let user: Row | null = null;
         if (r.guard) {
           user = await currentUser(env, req);
-          if (!user) fail(401, 'Avval tizimga kiring');
+          if (!user) return fail(401, 'Avval tizimga kiring');
           if (r.guard === 'admin' && user.role !== 'admin') fail(403, 'Ruxsat yo\'q');
         }
-        return await r.handler(req, env, { params, user });
+        return await r.handler(req, env, { params, user: user as Row });
       }
       return json({ error: 'Topilmadi' }, 404);
     } catch (e) {

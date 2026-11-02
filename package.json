@@ -3,12 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p client/tsconfig.json && tsc -p client/tsconfig.sw.json && tsc -p test/tsconfig.json",
     "dev": "wrangler d1 migrations apply rythm --local && wrangler dev --port 8787",
-    "deploy": "wrangler d1 migrations apply rythm --remote && wrangler deploy",
-    "test": "node --test test/*.test.js"
+    "deploy": "npm run typecheck && wrangler d1 migrations apply rythm --remote && wrangler deploy",
+    "test": "node --test test/*.test.ts"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261102.1",
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
     "playwright": "^1.64.1",
+    "typescript": "^5.9.3",
     "wrangler": "^4.156.1"
   }
 }

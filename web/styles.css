@@ -1,3 +1,4 @@
+@font-face { font-family: Manrope; src: url(/fonts/manrope.woff2) format('woff2'); font-weight: 400 800; font-display: swap; }
 :root {
   --bg: #0b0a0d; --s1: #151319; --s2: #1e1b24; --s3: #2a2632; --line: #ffffff14;
   --t1: #f6f3f7; --t2: #aaa4b1; --t3: #76707e;
@@ -94,7 +95,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 .pill { flex: none; padding: 8px 14px; min-height: 36px; border-radius: 99px; background: var(--s2); font-weight: 700; font-size: 13px; white-space: nowrap; }
 .pill.on { background: var(--t1); color: #0b0a0d; }
 .section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.shelf { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(136px, 172px); gap: 14px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; margin: 0 calc(var(--gut) * -1); padding: 0 var(--gut); }
+.shelf { padding-block: 14px; margin-block: -14px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(136px, 172px); gap: 14px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; margin: 0 calc(var(--gut) * -1); padding: 0 var(--gut); }
 .card { display: flex; flex-direction: column; gap: 8px; min-width: 0; scroll-snap-align: start; text-align: left; position: relative; padding: 0; }
 .card .cover { width: 100%; aspect-ratio: 1; height: auto; border-radius: 12px; font-size: 40px; }
 .card.round .cover { border-radius: 50%; }
@@ -155,7 +156,7 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 .now { position: fixed; inset: 0; z-index: 30; display: none; background: linear-gradient(180deg, #2c1c24, var(--bg) 75%); overflow: hidden auto; padding: calc(var(--sat) + 8px) calc(20px + var(--sar)) calc(var(--sab) + 16px) calc(20px + var(--sal)); }
 .now.show { display: flex; flex-direction: column; }
 .now-in { flex: 1; width: 100%; max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; min-height: 0; justify-content: space-between; }
-.now .art { width: min(100%, 52dvh); aspect-ratio: 1; height: auto; border-radius: 16px; align-self: center; font-size: 96px; box-shadow: 0 24px 60px #000a; }
+.now .art-wrap { width: min(100%, 52dvh); aspect-ratio: 1; height: auto; border-radius: 16px; align-self: center; font-size: 96px; box-shadow: 0 24px 60px #000a; }
 .now .ctl { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .now .pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .quality { display: inline-flex; align-self: flex-start; padding: 3px 9px; border-radius: 6px; border: 1px solid #ffb02e66; color: var(--a2); font-size: 11px; font-weight: 800; letter-spacing: .03em; }
@@ -239,7 +240,7 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
   .player .right input { width: min(110px, 100%); }
   .now .now-in { max-width: 980px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 40px; }
   .now .top { grid-column: 1 / -1; }
-  .now .art { width: min(100%, 68dvh); }
+  .now .art-wrap { width: min(100%, 68dvh); }
   .toast { bottom: calc(var(--bar) + 24px); }
   .view { padding-top: calc(var(--sat) + 24px); }
 }
@@ -247,12 +248,12 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 @media (max-height: 520px) and (orientation: landscape) {
   .now .now-in { max-width: none; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 24px; }
   .now .top { grid-column: 1 / -1; }
-  .now .art { width: 58dvh; }
+  .now .art-wrap { width: 58dvh; }
   :root { --tabs: 48px; }
   .tabs a { flex-direction: row; gap: 6px; }
 }
 @media (max-height: 760px) and (max-width: 819px) and (orientation: portrait) {
-  .now .art { width: min(100%, 38dvh); }
+  .now .art-wrap { width: min(100%, 38dvh); }
   .now-in { gap: 8px; }
   .now .pane { gap: 6px; }
   .playbtn.big { width: 58px; height: 58px; }
@@ -260,7 +261,23 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 .now { isolation: isolate; }
 .nebula { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -2; display: block; }
 .now::after { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(#0b0a0d33, #0b0a0d1a 35%, #0b0a0dcc 80%); }
+/* Cover as glass: the nebula stays visible through it. */
+.now .art-wrap { position: relative; flex: none; aspect-ratio: 1; align-self: center; border-radius: 22px; overflow: hidden; isolation: isolate; border: 1px solid #ffffff4d; background: linear-gradient(135deg, #ffffff24, #ffffff05 50%, #ffffff14); -webkit-backdrop-filter: blur(3px) saturate(170%); backdrop-filter: blur(3px) saturate(170%); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #ffffff26, 0 24px 60px #00000059; }
+.now .art-wrap .art { display: grid; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; box-shadow: none; align-self: auto; opacity: .58; }
+.now .art-wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(145deg, #ffffff40 0, #ffffff0d 28%, transparent 52%, #ffffff12 100%); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .now .art-wrap { -webkit-backdrop-filter: none; backdrop-filter: none; } .now .art-wrap .art { opacity: 1; } }
+.logo-mark { display: block; flex: none; width: 30px; height: 30px; }
+.logo-mark svg { display: block; width: 100%; height: 100%; }
+.home-mark { width: 34px; height: 34px; margin-right: -2px; }
+@media (min-width: 820px) { .home-mark { display: none; } }
+.new-tag { position: absolute; z-index: 2; top: 8px; left: 8px; }
+.card.spotlight { z-index: 3; }
+.card.spotlight .cover { animation: spot 5.2s cubic-bezier(.2, .7, .2, 1) both; }
+.card.spotlight .new-tag { animation: tagIn .7s cubic-bezier(.2, .9, .3, 1.2) .5s both; }
+@keyframes spot { 0% { transform: scale(1); box-shadow: 0 0 0 0 #ffb02e00; } 18% { transform: scale(1.07); box-shadow: 0 0 0 3px #ffb02e, 0 0 44px 10px #ff4d2e99; } 72% { transform: scale(1.07); box-shadow: 0 0 0 3px #ffb02e, 0 0 44px 10px #ff4d2e80; } 100% { transform: scale(1); box-shadow: 0 0 0 0 #ffb02e00; } }
+@keyframes tagIn { from { opacity: 0; transform: translateY(8px) scale(.8); } to { opacity: 1; transform: none; } }
 /* motion */
+.view.quiet > * { animation: none; }
 @keyframes eq { from { height: 25%; } to { height: 100%; } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes sheetUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -275,8 +292,8 @@ input[type=file]::file-selector-button { margin-right: 10px; padding: 8px 14px; 
 @media (hover: hover) { .card:hover .cover { transform: scale(1.03); } }
 .card:active .cover, .btn:active, .pill:active, .ib:active, .playbtn:active { transform: scale(.95); }
 .btn, .pill, .ib, .playbtn { transition: transform .12s, background .15s; }
-.now .art { transition: transform .35s cubic-bezier(.2, .7, .2, 1); transform: scale(.94); }
-html.playing .now .art { transform: none; }
+.now .art-wrap { transition: transform .35s cubic-bezier(.2, .7, .2, 1); transform: scale(.94); }
+html.playing .now .art-wrap { transform: none; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 
 /* iOS only: Liquid Glass look. Blur stays on floating surfaces; panels inside scrollers skip it to keep scrolling smooth.

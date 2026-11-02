@@ -1,4 +1,4 @@
-// JavaScript, test/e2e.mjs, node: API checks against a running `npm run dev`. Usage: node test/e2e.mjs [base] [adminPassword] [adminLogin]
+// JavaScript, test/e2e.ts, node: API checks against a running `npm run dev`. Usage: node test/e2e.ts [base] [adminPassword] [adminLogin]
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
@@ -10,14 +10,14 @@ const BASE = process.argv[2] || 'http://127.0.0.1:8787', PASS = process.argv[3] 
 const tmp = mkdtempSync(join(tmpdir(), 'rythm-'));
 const client = () => {
   let cookie = '';
-  return async (path, { method = 'GET', body, raw, headers = {} } = {}) => {
+  return async (path, { method = 'GET', body, raw, headers = {} }: any = {}) => {
     const r = await fetch(BASE + path, { method, redirect: 'manual', headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
     const sc = r.headers.get('set-cookie');
     if (sc) cookie = sc.split(';')[0];
     return r;
   };
 };
-const J = async p => { const r = await p; const d = await r.json().catch(() => ({})); return { s: r.status, ...d }; };
+const J = async (p: any): Promise<any> => { const r = await p; const d = await r.json().catch(() => ({})); return { s: r.status, ...d }; };
 const ff = (name, args) => { const f = join(tmp, name); execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...args, f]); return readFileSync(f); };
 let n = 0; const ok = m => console.log(`  ok ${++n} ${m}`);
 
@@ -53,7 +53,7 @@ const up = await upload(big);
 assert.equal(up.s, 200); assert.equal(up.bitDepth, 24); assert.equal(up.sampleRate, 96000);
 assert.ok(big.length > 25e6); ok(`multipart ${(big.length / 1e6).toFixed(1)} MB WAV accepted, metadata parsed`);
 const svg = await J(admin('/api/admin/images', { method: 'POST', raw: '<svg onload=alert(1)>' })); assert.equal(svg.s, 415);
-const png = await J(admin('/api/admin/images', { method: 'POST', raw: readFileSync('public/icon-512.png') })); assert.equal(png.s, 201); ok('svg refused, png stored');
+const png = await J(admin('/api/admin/images', { method: 'POST', raw: readFileSync('web/icon-512.png') })); assert.equal(png.s, 201); ok('svg refused, png stored');
 const T = await J(admin('/api/admin/tracks', { method: 'POST', body: { key: up.key, title: 'Sinov <b>qo\'shig\'i</b>', artist: 'Test Ijrochi', album: 'Birinchi', genre: 'Pop', coverKey: png.key, lyrics: 'matn' } }));
 assert.equal(T.s, 201);
 // Streaming
@@ -137,6 +137,19 @@ else { // Never publish a fake build over a real release.
   await J(admin(`/api/admin/releases/${l.id}`, { method: 'DELETE' }));
 }
 ok('APK release: magic checked, version must grow');
+// Beat map: admin only, must match the song's length, then served publicly with the track.
+const frames = Math.round(up.duration * 20), map = Buffer.alloc(frames * 16, 7);
+assert.equal((await J(user(`/api/admin/tracks/${T.id}/rhythm`, { method: 'PUT', raw: map }))).s, 403);
+assert.equal((await J(admin(`/api/admin/tracks/${T.id}/rhythm`, { method: 'PUT', raw: Buffer.alloc(160) }))).s, 400);
+assert.equal((await J(admin(`/api/admin/tracks/${T.id}/rhythm`, { method: 'PUT', raw: map }))).s, 200);
+const withMap = await J(admin(`/api/tracks/${T.id}`)); assert.ok(withMap.rhythm);
+assert.equal((await (await anon(withMap.rhythm)).arrayBuffer()).byteLength, map.length); ok('beat map: admin only, validated, served');
+assert.equal((await anon(play.url)).headers.get('cache-control')?.includes('no-transform'), true); ok('stream forbids recompression');
+const seenAt = withMap.createdAt;
+assert.equal((await J(user('/api/me/seen', { method: 'POST', body: { at: seenAt } }))).s, 200);
+assert.equal((await J(user('/api/me'))).user.seenTrackAt, seenAt);
+await J(user('/api/me/seen', { method: 'POST', body: { at: seenAt - 100 } }));
+assert.equal((await J(user('/api/me'))).user.seenTrackAt, seenAt); ok('new-song announcement stays seen and never moves backwards');
 // Delete removes the R2 object
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}`, { method: 'DELETE' }))).s, 200);
 assert.equal((await anon(play.url)).status, 404); ok('deleting a track removes it');
