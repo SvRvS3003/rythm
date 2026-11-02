@@ -1,4 +1,4 @@
-// JavaScript, test/e2e.mjs, node: API checks against a running `npm run dev`. Usage: node test/e2e.mjs [base] [adminPassword]
+// JavaScript, test/e2e.mjs, node: API checks against a running `npm run dev`. Usage: node test/e2e.mjs [base] [adminPassword] [adminLogin]
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-const BASE = process.argv[2] || 'http://127.0.0.1:8787', PASS = process.argv[3] || 'local-dev-pass';
+const BASE = process.argv[2] || 'http://127.0.0.1:8787', PASS = process.argv[3] || 'local-dev-pass', LOGIN = process.argv[4] || 'admin';
 const tmp = mkdtempSync(join(tmpdir(), 'rythm-'));
 const client = () => {
   let cookie = '';
@@ -22,8 +22,8 @@ const ff = (name, args) => { const f = join(tmp, name); execFileSync('ffmpeg', [
 let n = 0; const ok = m => console.log(`  ok ${++n} ${m}`);
 
 const admin = client(), user = client(), anon = client();
-assert.equal((await J(admin('/api/auth/login', { method: 'POST', body: { email: 'admin', password: 'wrong' } }))).s, 401);
-assert.equal((await J(admin('/api/auth/login', { method: 'POST', body: { email: 'admin', password: PASS } }))).s, 200); ok('admin login, wrong password refused');
+assert.equal((await J(admin('/api/auth/login', { method: 'POST', body: { email: LOGIN, password: 'wrong' } }))).s, 401);
+assert.equal((await J(admin('/api/auth/login', { method: 'POST', body: { email: LOGIN, password: PASS } }))).s, 200); ok('admin login, wrong password refused');
 const email = `u${Date.now()}@test.uz`;
 assert.equal((await J(user('/api/auth/register', { method: 'POST', body: { name: 'Ali', email, password: 'parol12345' } }))).s, 201);
 assert.equal((await J(user('/api/admin/stats'))).s, 403);

@@ -10,7 +10,7 @@ const BASE = 'https://svrvs-rythm.svrvs-rythm.workers.dev', ADB = join(homedir()
 const OUT = process.argv[2] || mkdtempSync(join(tmpdir(), 'droid-'));
 const adb = (...a) => execFileSync(ADB, a, { encoding: 'utf8', maxBuffer: 1 << 26 });
 const wait = ms => new Promise(r => setTimeout(r, ms));
-const pass = readFileSync('.prod.vars', 'utf8').match(/ADMIN_PASSWORD=(.*)/)[1].trim();
+const vars = readFileSync('.prod.vars', 'utf8'), pass = vars.match(/ADMIN_PASSWORD=(.*)/)[1].trim(), login = vars.match(/ADMIN_LOGIN=(.*)/)[1].trim();
 let cookie = '';
 const api = async (path, { method = 'GET', body, raw } = {}) => {
   const r = await fetch(BASE + path, { method, headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
@@ -36,7 +36,7 @@ const ok = m => console.log(`  ok ${m}`);
 
 const email = `droid${Date.now()}@test.uz`;
 const ids = [];
-await api('/api/auth/login', { method: 'POST', body: { email: 'admin', password: pass } });
+await api('/api/auth/login', { method: 'POST', body: { email: login, password: pass } });
 const before = await api('/api/admin/settings');
 try {
   await api('/api/admin/settings', { method: 'PATCH', body: { ad_every: 0, plans_enabled: true } });

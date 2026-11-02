@@ -104,7 +104,7 @@ route('POST', '/api/auth/login', async (req, env) => {
   // Admin credentials live in Worker secrets, so rotating the secret rotates the login.
   if (env.ADMIN_LOGIN && email === env.ADMIN_LOGIN.toLowerCase()) {
     if (!env.ADMIN_PASSWORD || !safeEqual(await sha256(password), await sha256(env.ADMIN_PASSWORD))) { await note(env, key); fail(401, "Login yoki parol noto'g'ri"); }
-    await run(env, "INSERT INTO users (id,email,name,pass_hash,pass_salt,role,created_at) VALUES ('admin',?,'Admin','','','admin',?) ON CONFLICT(id) DO NOTHING", email, now());
+    await run(env, "INSERT INTO users (id,email,name,pass_hash,pass_salt,role,created_at) VALUES ('admin',?,'Admin','','','admin',?) ON CONFLICT(id) DO UPDATE SET email=excluded.email", email, now());
     return json({ ok: true }, 200, { 'set-cookie': await startSession(env, req, 'admin') });
   }
   const u = await first(env, 'SELECT * FROM users WHERE email=?', email);
