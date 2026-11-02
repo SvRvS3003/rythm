@@ -179,6 +179,26 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   }
   await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: '' } }));
 }
+// User list: total, paging, spreadsheet export, admin only.
+{
+  const evil = client(), evilMail = `csv${Date.now()}@test.uz`;
+  await evil('/api/auth/register', { method: 'POST', body: { name: '=HYPERLINK("x")', email: evilMail, password: 'parol12345' } });
+  const listed = await J(admin('/api/admin/users?q=&filter=&offset=0'));
+  assert.ok(listed.total >= 2); assert.ok(listed.users.some((u: any) => u.email === evilMail)); assert.ok(listed.users[0].created_at);
+  assert.equal((await J(admin(`/api/admin/users?q=&filter=&offset=${listed.total}`))).users.length, 0);
+  assert.equal((await J(evil('/api/admin/users'))).s, 403); assert.equal((await evil('/api/admin/users.csv')).status, 403);
+  const csv = await (await admin('/api/admin/users.csv')).text();
+  assert.ok(csv.includes(evilMail)); assert.ok(csv.includes(`"'=HYPERLINK(""x"")"`)); assert.ok(!csv.includes('pass_hash')); ok('user list: total, paging, safe export, admin only');
+  const victim = listed.users.find((u: any) => u.email === evilMail).id;
+  assert.equal((await J(evil(`/api/admin/users/${victim}`, { method: 'DELETE' }))).s, 403);
+  assert.equal((await J(admin(`/api/admin/users/${victim}`, { method: 'DELETE' }))).s, 409);
+  const adminId = (await J(admin('/api/me'))).user.id;
+  assert.equal((await J(admin(`/api/admin/users/${adminId}`, { method: 'DELETE' }))).s, 400);
+  await J(admin(`/api/admin/users/${victim}`, { method: 'PATCH', body: { banned: true } }));
+  assert.equal((await J(admin(`/api/admin/users/${victim}`, { method: 'DELETE' }))).s, 200);
+  assert.ok(!(await J(admin('/api/admin/users?q=&filter=&offset=0'))).users.some((u: any) => u.id === victim));
+  assert.equal((await J(evil('/api/me'))).user, null); ok('delete: admin only, must be blocked first, admin account protected, session ends');
+}
 // Family seats
 const friend = client(), fm = `f${Date.now()}@test.uz`;
 await friend('/api/auth/register', { method: 'POST', body: { name: 'Vali', email: fm, password: 'parol12345' } });

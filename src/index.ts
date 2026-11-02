@@ -750,8 +750,20 @@ route('GET', '/api/admin/users', async (req, env) => {
   const like = `%${q.replace(/[\\%_]/g, c => '\\' + c)}%`;
   const filters: Record<string, string> = { exempt: 'AND u.plan_exempt=1', paid: `AND u.plan_expires>${now()}`, banned: 'AND u.banned=1' };
   const where = filters[filter ?? ''] || '';
-  const users = await all(env, `SELECT u.id,u.email,u.name,u.role,u.banned,u.plan_exempt,u.plan_id,u.plan_expires,u.family_owner_id,u.created_at,u.last_seen,p.name plan_name FROM users u LEFT JOIN plans p ON p.id=u.plan_id WHERE (u.email LIKE ?1 ESCAPE '\\' OR u.name LIKE ?1 ESCAPE '\\') ${where} ORDER BY u.created_at DESC LIMIT 200`, like);
-  return json({ users, now: now() });
+  const offset = int(p.get('offset') ?? 0, 0, 100000000, 'Offset');
+  const [users, total] = await Promise.all([
+    all(env, `SELECT u.id,u.email,u.name,u.role,u.banned,u.plan_exempt,u.plan_id,u.plan_expires,u.family_owner_id,u.created_at,u.last_seen,pl.name plan_name FROM users u LEFT JOIN plans pl ON pl.id=u.plan_id WHERE (u.email LIKE ?1 ESCAPE '\\' OR u.name LIKE ?1 ESCAPE '\\') ${where} ORDER BY u.created_at DESC LIMIT 100 OFFSET ?2`, like, offset),
+    one(env, `SELECT COUNT(*) c FROM users u WHERE (u.email LIKE ?1 ESCAPE '\\' OR u.name LIKE ?1 ESCAPE '\\') ${where}`, like),
+  ]);
+  return json({ users, total: total.c, now: now() });
+}, 'admin');
+route('GET', '/api/admin/users.csv', async (req, env) => {
+  const rows = await all(env, 'SELECT u.name,u.email,u.created_at,u.last_seen,u.plan_expires,u.plan_exempt,u.banned,pl.name plan_name FROM users u LEFT JOIN plans pl ON pl.id=u.plan_id ORDER BY u.created_at DESC');
+  const day = (t: number): string => (t ? new Date(t * 1000).toISOString().slice(0, 10) : '');
+  // A leading = + - @ would run as a formula in Excel, and names are typed by users.
+  const cell = (v: unknown): string => { const c = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(c) ? `'${c}` : c).replaceAll('"', '""')}"`; };
+  const lines = rows.map(r => [r.name, r.email, day(r.created_at), day(r.last_seen), r.plan_expires > now() ? r.plan_name ?? 'Tarif' : '', day(r.plan_expires > now() ? r.plan_expires : 0), r.plan_exempt ? 'ha' : '', r.banned ? 'ha' : ''].map(cell).join(','));
+  return new Response(`\ufeff${['Ism,Email,Ro\'yxatdan o\'tgan,Oxirgi kirgan,Tarif,Tarif tugashi,Plansiz,Bloklangan', ...lines].join('\r\n')}\r\n`, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="foydalanuvchilar.csv"', 'cache-control': 'no-store' } });
 }, 'admin');
 route('PATCH', '/api/admin/users/:id', async (req, env, { params }) => {
   const u = await first(env, 'SELECT * FROM users WHERE id=?', params.id);
@@ -768,6 +780,16 @@ route('PATCH', '/api/admin/users/:id', async (req, env, { params }) => {
     await run(env, 'UPDATE users SET plan_id=?,plan_expires=? WHERE id=?', plan.id, Math.max(now(), u.plan_expires) + plan.days * DAY, u.id);
   }
   if (b.revokePlan) await env.DB.batch([st(env, 'UPDATE users SET plan_id=NULL,plan_expires=0 WHERE id=?', u.id), st(env, 'UPDATE users SET family_owner_id=NULL WHERE family_owner_id=?', u.id)]);
+  return json({ ok: true });
+}, 'admin');
+
+// Permanent: two steps on purpose, an account must be blocked before it can be removed.
+route('DELETE', '/api/admin/users/:id', async (req, env, { params }) => {
+  const u = await first(env, 'SELECT role,banned FROM users WHERE id=?', params.id);
+  if (!u) return fail(404, 'Foydalanuvchi topilmadi');
+  if (u.role === 'admin') return fail(400, 'Adminni o\'chirib bo\'lmaydi');
+  if (!u.banned) return fail(409, 'Avval akkauntni bloklang');
+  await env.DB.batch([st(env, 'UPDATE users SET family_owner_id=NULL WHERE family_owner_id=?', params.id), st(env, 'DELETE FROM users WHERE id=?', params.id)]);
   return json({ ok: true });
 }, 'admin');
 

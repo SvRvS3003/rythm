@@ -55,7 +55,7 @@ export const icon = (name: string, size = 22): SVGSVGElement => {
 // Temporary page data: a page opens at once from here, refreshes behind the scenes, and a newer answer replaces the old one.
 const store = new Map<string, { json: string; at: number }>();
 const FRESH_MS = 15000;
-const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/)/; // live or one-off answers
+const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users)/; // live or one-off answers
 const KEEP = ['/api/me', '/api/home', '/api/library', '/api/plans']; // also survive closing the app, so it opens instantly
 const NO_INVALIDATE = /^\/api\/(play$|plays\/|ads\/|me\/seen)/; // frequent writes that change no page
 const pending = new Map<string, Promise<unknown>>();

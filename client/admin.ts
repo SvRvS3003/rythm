@@ -152,27 +152,44 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
     let filter = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
     const pills = h('div', { class: 'pill-row' });
-    const load = guard(async () => {
-      const d = await api(`/api/admin/users?q=${encodeURIComponent(q.value)}&filter=${filter}`);
-      pills.replaceChildren(...[['', 'Hammasi'], ['exempt', 'Plansiz ro\'yxat'], ['paid', 'Pullik'], ['banned', 'Bloklangan']].map(([k, l]) => h('button', { class: `pill ${filter === k ? 'on' : ''}`, onclick: () => { filter = k; load(); } }, l)));
+    const summary = h('h2', null, 'Foydalanuvchilar');
+    const more = h('button', { class: 'btn full' }, 'Yana ko\'rsatish');
+    let shown = 0, serial = 0;
+    const row = (u: Row, nowT: number) => {
+      const active = u.plan_expires > nowT;
       const patch = (id: string, body: unknown, msg: string) => guard(async () => { await api(`/api/admin/users/${id}`, { method: 'PATCH', body }); toast(msg); load(); });
-      list.replaceChildren(...(d.users.length ? d.users.map((u: Row) => {
-        const active = u.plan_expires > d.now;
-        return h('div', { class: 'item' },
-          h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, u.name), h('div', { class: 'clip small muted' }, u.email),
-            h('div', { class: 'row wrap', style: 'gap:6px;margin-top:6px' },
-              u.role === 'admin' ? h('span', { class: 'tag hot' }, 'Admin') : null,
-              active ? h('span', { class: 'tag ok' }, `${u.plan_name || 'Tarif'} · ${date(u.plan_expires)} gacha`) : null,
-              u.plan_exempt ? h('span', { class: 'tag ok' }, 'Plan shart emas') : null,
-              u.banned ? h('span', { class: 'tag bad' }, 'Bloklangan') : null)),
-          u.role === 'admin' ? null : h('div', { class: 'acts' },
-            h('button', { class: `btn sm ${u.plan_exempt ? 'light' : ''}`, onclick: patch(u.id, { planExempt: !u.plan_exempt }, u.plan_exempt ? 'Ro\'yxatdan olindi' : 'Plansiz ro\'yxatga qo\'shildi') }, u.plan_exempt ? 'Plansizdan olish' : 'Plansiz qilish'),
-            h('button', { class: 'btn sm', onclick: () => sheet(close => [h('h2', null, 'Tarif berish'), h('p', { class: 'muted small clip' }, u.email), plans.map((p: Row) => h('button', { class: 'btn full', onclick: async () => { await patch(u.id, { grantPlanId: p.id }, 'Tarif berildi')(); close(); } }, `${p.name} · ${p.days} kun`)), active ? h('button', { class: 'btn full danger', onclick: async () => { await patch(u.id, { revokePlan: true }, 'Tarif bekor qilindi')(); close(); } }, 'Tarifni bekor qilish') : null]) }, 'Tarif'),
-            h('button', { class: 'btn sm danger', onclick: patch(u.id, { banned: !u.banned }, 'Saqlandi') }, u.banned ? 'Blokdan chiqarish' : 'Bloklash')));
-      }) : [h('p', { class: 'muted' }, 'Foydalanuvchi topilmadi')]));
+      return h('div', { class: 'item' },
+        h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, u.name), h('div', { class: 'clip small muted' }, u.email),
+          h('div', { class: 'small dim' }, `Ro'yxatdan o'tgan: ${date(u.created_at)} · Oxirgi kirgan: ${date(u.last_seen)}`),
+          h('div', { class: 'row wrap', style: 'gap:6px;margin-top:6px' },
+            u.role === 'admin' ? h('span', { class: 'tag hot' }, 'Admin') : null,
+            active ? h('span', { class: 'tag ok' }, `${u.plan_name || 'Tarif'} · ${date(u.plan_expires)} gacha`) : null,
+            u.plan_exempt ? h('span', { class: 'tag ok' }, 'Plan shart emas') : null,
+            u.banned ? h('span', { class: 'tag bad' }, 'Bloklangan') : null)),
+        u.role === 'admin' ? null : h('div', { class: 'acts' },
+          h('button', { class: `btn sm ${u.plan_exempt ? 'light' : ''}`, onclick: patch(u.id, { planExempt: !u.plan_exempt }, u.plan_exempt ? 'Ro\'yxatdan olindi' : 'Plansiz ro\'yxatga qo\'shildi') }, u.plan_exempt ? 'Plansizdan olish' : 'Plansiz qilish'),
+          h('button', { class: 'btn sm', onclick: () => sheet(close => [h('h2', null, 'Tarif berish'), h('p', { class: 'muted small clip' }, u.email), plans.map((p: Row) => h('button', { class: 'btn full', onclick: async () => { await patch(u.id, { grantPlanId: p.id }, 'Tarif berildi')(); close(); } }, `${p.name} · ${p.days} kun`)), active ? h('button', { class: 'btn full danger', onclick: async () => { await patch(u.id, { revokePlan: true }, 'Tarif bekor qilindi')(); close(); } }, 'Tarifni bekor qilish') : null]) }, 'Tarif'),
+          h('button', { class: 'btn sm danger', onclick: patch(u.id, { banned: !u.banned }, 'Saqlandi') }, u.banned ? 'Blokdan chiqarish' : 'Bloklash'),
+          u.banned ? h('button', { class: 'btn sm danger', onclick: () => sheet(close => [h('h2', null, 'Akkaunt o\'chirilsinmi?'), h('p', { class: 'muted', style: 'overflow-wrap:anywhere' }, `${u.email} butunlay o'chiriladi: pleylistlari, yoqtirganlari, tinglash tarixi va to'lov yozuvlari ham. Buni qaytarib bo'lmaydi. Shu email bilan keyin qayta ro'yxatdan o'tish mumkin bo'ladi.`),
+            h('button', { class: 'btn danger', onclick: guard(async () => { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); close(); toast('Akkaunt o\'chirildi'); load(); }) }, 'Ha, o\'chirish'), h('button', { class: 'btn', onclick: close }, 'Bekor qilish')]) }, 'O\'chirish') : null));
+    };
+    const page = async (first: boolean, run: number) => {
+      const d = await api(`/api/admin/users?q=${encodeURIComponent(q.value)}&filter=${filter}&offset=${first ? 0 : shown}`);
+      if (run !== serial) return;
+      if (first) { shown = 0; list.replaceChildren(); }
+      shown += d.users.length;
+      summary.textContent = `Foydalanuvchilar: ${d.total} ta`;
+      if (!d.total) list.append(h('p', { class: 'muted' }, 'Foydalanuvchi topilmadi'));
+      list.append(...d.users.map((u: Row) => row(u, d.now)));
+      more.style.display = shown < d.total ? '' : 'none';
+    };
+    more.addEventListener('click', guard(() => page(false, serial)));
+    const load = guard(async () => {
+      pills.replaceChildren(...[['', 'Hammasi'], ['exempt', 'Plansiz ro\'yxat'], ['paid', 'Pullik'], ['banned', 'Bloklangan']].map(([k, l]) => h('button', { class: `pill ${filter === k ? 'on' : ''}`, onclick: () => { filter = k; load(); } }, l)));
+      await page(true, ++serial);
     });
     q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 250); });
-    el.append(await planSwitch(), q, pills, list);
+    el.append(await planSwitch(), h('div', { class: 'row between wrap' }, summary, h('a', { class: 'btn sm', href: '/api/admin/users.csv', download: 'foydalanuvchilar.csv' }, 'Excel uchun yuklab olish')), q, pills, list, more);
     load();
   },
 
