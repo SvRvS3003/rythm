@@ -33,9 +33,13 @@ for (const i of [1, 2, 3]) {
     return (await fetch('/api/admin/uploads/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: st.key, uploadId: st.uploadId, parts: [part] }) })).json();
   }, b64);
   ids.push((await j('/api/admin/tracks', { key: up.key, title: `Ketma${i}`, artist: 'PB' })).id);
+  await p.evaluate(async id => { await fetch(`/api/admin/tracks/${id}/rhythm`, { method: 'PUT', body: new Uint8Array(24 * 20 * 16).fill(120) }); }, ids[ids.length - 1]);
 }
 let code = 0;
 try {
+  const mapHits: { id: string; t: number }[] = [];
+  p.on('request', r => { const m = /\/media\/rhythm\/([0-9a-f]{32})/.exec(r.url()); if (m) mapHits.push({ id: m[1], t: Date.now() }); });
+  const starts: Record<string, number> = {};
   await p.goto(BASE); await p.waitForSelector('.card');
   await p.waitForTimeout(1500);
   await p.locator('.card', { hasText: 'Ketma3' }).first().click();
@@ -43,7 +47,7 @@ try {
   const end = Date.now() + 95000;
   while (Date.now() < end) {
     const t = await p.evaluate(() => document.querySelector('.player .info .clip')?.textContent);
-    if (t && seen[seen.length - 1] !== t) { seen.push(t); console.log('  now:', t); }
+    if (t && seen[seen.length - 1] !== t) { seen.push(t); starts[t] = Date.now(); console.log('  now:', t); }
     if (seen.length >= 4) break;
     await p.waitForTimeout(500);
   }
@@ -54,6 +58,9 @@ try {
   console.log('switch gaps ms:', gaps.join(', ') || 'none', '| waiting events:', log.filter(e => e.ev === 'waiting').length, '| errors:', log.filter(e => e.ev === 'error').length);
   const cached = await p.evaluate(async () => { try { const c = await caches.open('rythm-audio'); return (await c.keys()).length; } catch { return -1; } });
   console.log('tracks in device cache:', cached);
+  // Ketma3 plays first, so Ketma2's beat map must arrive before Ketma2 starts, and only once.
+  const next = mapHits.filter(h => h.id === ids[1]);
+  if (next.length !== 1 || next[0].t >= starts.Ketma2) { console.log('FAIL: next beat map not preloaded', next.length); code = 1; } else console.log(`beat map preloaded ${((starts.Ketma2 - next[0].t) / 1000).toFixed(1)} s before the song, fetched once`);
   // Repeat modes: order all -> one -> off. Each ends a song and checks what happens next.
   await p.evaluate(() => { const a = (window as any).__a; a.volume = 0; });
   const title = () => p.evaluate(() => document.querySelector('.player .info .clip')?.textContent);

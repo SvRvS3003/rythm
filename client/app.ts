@@ -262,6 +262,7 @@ async function prepareNext() {
     const grant = await requestPlay(nextT.id);
     if (P.track !== t) return;
     P.next = { i, grant };
+    fetchBeat(nextT); // the map is tiny, so it travels even on saveData
     if (grant.url && !nav.connection?.saveData) sw({ type: 'prefetch', id: nextT.id, url: grant.url });
   } catch { /* the normal path retries at the switch */ } finally { P.preparing = false; }
 }
@@ -416,12 +417,22 @@ function cycleRepeat() { P.repeat = REPEAT_NEXT[P.repeat]; P.next = null; P.pick
 // ---------- now playing ----------
 // Beat map of the current song, fetched only while the visual is on screen.
 const beat: { id: string | null; data: Uint8Array | null } = { id: null, data: null };
+const beatStore = new Map<string, Promise<Uint8Array | null>>(); // kept for this session, so a song's map downloads once
+function fetchBeat(t: Track): Promise<Uint8Array | null> {
+  if (!t.rhythm) return Promise.resolve(null);
+  let got = beatStore.get(t.id);
+  if (!got) {
+    got = fetch(t.rhythm).then(r => (r.ok ? r.arrayBuffer() : null)).then(b => (b ? new Uint8Array(b) : null)).catch(() => { beatStore.delete(t.id); return null; });
+    beatStore.set(t.id, got);
+    if (beatStore.size > 12) beatStore.delete(beatStore.keys().next().value as string);
+  }
+  return got;
+}
 function loadRhythm(): void {
   const t = P.track;
   if (!t || beat.id === t.id) return;
   beat.id = t.id; beat.data = null; lockFrameNo = -1;
-  if (!t.rhythm) return;
-  fetch(t.rhythm).then(r => (r.ok ? r.arrayBuffer() : null)).then(b => { if (b && beat.id === t.id) beat.data = new Uint8Array(b); }).catch(() => {});
+  fetchBeat(t).then(d => { if (beat.id === t.id) beat.data = d; });
 }
 // Fills bins with the spectrum at the exact playback position and returns the bass hit, or null when the song has no map.
 function readRhythm(bins: Uint8Array): number | null {
