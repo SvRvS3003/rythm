@@ -799,9 +799,13 @@ function buy(p: Row, card: Row): void {
     const ref = h('input', { placeholder: 'Chek raqami yoki karta oxirgi 4 raqami', 'aria-label': 'To\'lov ma\'lumoti', required: true, minlength: 3 });
     if (!card.number) return [h('h2', null, p.name), h('p', { class: 'muted' }, 'To\'lov rekvizitlari hali kiritilmagan. Keyinroq urinib ko\'ring.'), h('button', { class: 'btn', onclick: close }, 'Yopish')];
     return [h('h2', null, `${p.name} · ${money(p.price)}`),
-      h('ol', { class: 'steps' }, h('li', null, 'Summani quyidagi kartaga o\'tkazing.'), h('li', null, 'Chek raqamini kiriting va yuboring.'), h('li', null, 'Admin tasdiqlagach tarif faollashadi.')),
+      h('ol', { class: 'steps' }, h('li', null, 'Tugmani bosing, Click\'da "Kartaga o\'tkazma"ga raqamni qo\'ying va summani yuboring.'), h('li', null, 'Chek raqamini kiriting va yuboring.'), h('li', null, 'Admin tasdiqlagach tarif faollashadi.')),
       h('div', { class: 'panel' }, h('div', { style: 'font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;overflow-wrap:anywhere' }, card.number), h('div', { class: 'muted small' }, card.holder),
-        h('button', { class: 'btn sm', onclick: () => navigator.clipboard?.writeText(card.number).then(() => toast('Nusxalandi')) }, 'Nusxalash')),
+        h('button', { class: 'btn pri', onclick: () => {
+          // No public Click link can prefill a card, so the number travels by clipboard. Copy first: it must happen inside the tap.
+          navigator.clipboard?.writeText(card.number.replace(/\s/g, '')).then(() => toast('Karta raqami nusxalandi')).catch(() => toast('Raqamni qo\'lda nusxalang'));
+          window.open('https://my.click.uz/', '_blank', 'noopener');
+        } }, 'Nusxalash va Click\'ni ochish')),
       h('form', { class: 'stack', onsubmit: guard(async (e: Event) => { e.preventDefault(); await api('/api/payments', { method: 'POST', body: { planId: p.id, reference: ref.value } }); close(); toast('So\'rov yuborildi'); route(); }) }, ref, h('button', { class: 'btn pri' }, 'To\'ladim'))];
   });
 }

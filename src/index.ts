@@ -1,4 +1,6 @@
 // TypeScript, src/index.ts, Cloudflare Workers runtime: API, R2 streaming, admin.
+import { connect } from 'cloudflare:sockets';
+import { smtpSend } from './mail.ts';
 import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.ts';
 
 export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string; EMAIL?: { send(m: { to: string; from: { email: string; name: string }; subject: string; text: string; html: string }): Promise<unknown> } }
@@ -103,6 +105,17 @@ async function entitlement(env: Env, u: Row, s: Record<string, string>): Promise
 const publicUser = (u: Row, e: Entitlement) => ({ id: u.id, name: u.name, email: u.email, role: u.role, entitlement: e, seenTrackAt: u.seen_track_at });
 const publicSettings = (s: Record<string, string>) => ({ siteName: s.site_name, heroTitle: s.hero_title, heroSub: s.hero_sub, plansEnabled: s.plans_enabled === '1', supportUrl: s.support_url });
 
+// Gmail works today with no domain; Cloudflare Email takes over by clearing the Gmail fields once a domain is onboarded.
+const mailReady = (env: Env, s: Record<string, string>): boolean => !!((s.smtp_user && s.smtp_pass) || (s.email_from && env.EMAIL));
+async function sendMail(env: Env, s: Record<string, string>, to: string, subject: string, text: string, html: string): Promise<void> {
+  if (!(s.smtp_user && s.smtp_pass)) { await env.EMAIL!.send({ to, from: { email: s.email_from, name: s.site_name }, subject, text, html }); return; }
+  const sock = connect({ hostname: 'smtp.gmail.com', port: 465 }, { secureTransport: 'on', allowHalfOpen: false });
+  const timeout = new Promise<never>((_, no) => setTimeout(() => no(new Error('SMTP timeout')), 15000));
+  try {
+    await Promise.race([smtpSend(sock.readable, sock.writable, { user: s.smtp_user, pass: s.smtp_pass.replace(/\s/g, ''), to, fromName: s.site_name, subject, text, html }), timeout]);
+  } finally { await sock.close().catch(() => {}); }
+}
+
 route('POST', '/api/auth/register', async (req, env) => {
   await limited(env, `reg:${ip(req)}`, 20, 3600);
   const b = await body(req);
@@ -115,7 +128,7 @@ route('POST', '/api/auth/register', async (req, env) => {
   const { hash, salt } = await hashPassword(password);
   const s = await settings(env);
   // The sender lives in settings, so moving to a new domain needs no code change. Empty means codes are off.
-  if (s.email_from && env.EMAIL) {
+  if (mailReady(env, s)) {
     const prev = await first(env, 'SELECT sent_at FROM signups WHERE email=?', email);
     if (prev && now() - prev.sent_at < 60) fail(429, 'Kod yuborilgan. Bir daqiqadan keyin qayta urinib ko\'ring.');
     await limited(env, `code:${email}`, 5, 3600);
@@ -125,7 +138,7 @@ route('POST', '/api/auth/register', async (req, env) => {
       ON CONFLICT(email) DO UPDATE SET name=excluded.name,pass_hash=excluded.pass_hash,pass_salt=excluded.pass_salt,code_hash=excluded.code_hash,tries=0,expires=excluded.expires,sent_at=excluded.sent_at`,
       email, name, hash, salt, await hmac(env.SIGNING_SECRET, `signup.${email}.${code}`), now() + 600, now());
     try {
-      await env.EMAIL.send({ to: email, from: { email: s.email_from, name: s.site_name }, subject: `${s.site_name}: tasdiqlash kodi ${code}`, text: `Tasdiqlash kodingiz: ${code}\nKod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.`, html: `<p>Tasdiqlash kodingiz:</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>Kod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.</p>` });
+      await sendMail(env, s, email, `${s.site_name}: tasdiqlash kodi ${code}`, `Tasdiqlash kodingiz: ${code}\nKod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.`, `<p>Tasdiqlash kodingiz:</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>Kod 10 daqiqa amal qiladi. Siz so'ramagan bo'lsangiz, bu xatga e'tibor bermang.</p>`);
     } catch (e) {
       console.error(e);
       await run(env, 'DELETE FROM signups WHERE email=?', email);
@@ -819,9 +832,9 @@ route('DELETE', '/api/admin/ads/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-const SETTING_KEYS = ['click_service_id', 'click_merchant_id', 'email_from', 'plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
+const SETTING_KEYS = ['smtp_user', 'click_service_id', 'click_merchant_id', 'email_from', 'plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
 // The secret can be replaced from the panel but never read back.
-route('GET', '/api/admin/settings', async (req, env) => { const { click_secret, ...rest } = await settings(env); return json({ ...rest, click_secret_set: !!click_secret }); }, 'admin');
+route('GET', '/api/admin/settings', async (req, env) => { const { click_secret, smtp_pass, ...rest } = await settings(env); return json({ ...rest, click_secret_set: !!click_secret, smtp_pass_set: !!smtp_pass }); }, 'admin');
 route('PATCH', '/api/admin/settings', async (req, env) => {
   const b = await body(req);
   const writes = [];
@@ -836,6 +849,9 @@ route('PATCH', '/api/admin/settings', async (req, env) => {
   }
   const secret = str(b.click_secret, 200);
   if (secret) writes.push(st(env, "INSERT INTO settings (key,value) VALUES ('click_secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", secret));
+  const smtpPass = str(b.smtp_pass, 100);
+  if (smtpPass) writes.push(st(env, "INSERT INTO settings (key,value) VALUES ('smtp_pass',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", smtpPass));
+  if (b.smtp_user !== undefined && str(b.smtp_user, 120) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str(b.smtp_user, 120))) fail(400, "Gmail manzili noto'g'ri");
   if (b.email_from !== undefined && str(b.email_from, 120) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str(b.email_from, 120))) fail(400, "Yuboruvchi email noto'g'ri");
   if (writes.length) await env.DB.batch(writes);
   return json({ ok: true });

@@ -161,6 +161,7 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
 {
   const em = `code${Date.now()}@test.uz`, c1 = client();
   assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: 'not-an-email' } }))).s, 400);
+  assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { smtp_user: 'bad' } }))).s, 400);
   assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: 'no-reply@svrvs.uz' } }))).s, 200);
   const reg = await J(c1('/api/auth/register', { method: 'POST', body: { name: 'Kod', email: em, password: 'parol12345' } }));
   assert.equal(reg.s, 202); assert.equal(reg.verify, true);
