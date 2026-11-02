@@ -1,9 +1,10 @@
 // TypeScript, src/index.ts, Cloudflare Workers runtime: API, R2 streaming, admin.
 import { connect } from 'cloudflare:sockets';
 import { smtpSend } from './mail.ts';
+import { vapidHeader, vapidPublicKey } from './push.ts';
 import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.ts';
 
-export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string; EMAIL?: { send(m: { to: string; from: { email: string; name: string }; subject: string; text: string; html: string }): Promise<unknown> } }
+export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string; VAPID_JWK?: string; EMAIL?: { send(m: { to: string; from: { email: string; name: string }; subject: string; text: string; html: string }): Promise<unknown> } }
 // SQL rows are shaped by the query text beside each call, so they stay loosely typed.
 type Row = Record<string, any>;
 type Guard = 'user' | 'admin' | null;
@@ -570,6 +571,74 @@ route('GET', '/api/offline/:id/url', async (req, env, { user, params }) => {
   return json({ url: `/media/stream/${params.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, params.id, user.id, exp)}` });
 });
 
+// ---------- notifications ----------
+// A device only remembers how far it has read, so "new song to everyone" adds one row however many devices exist.
+const PUSH_CONTACT = 'https://rythm.svrvs-rythm.workers.dev';
+const NUDGE_AFTER = 7 * DAY, NUDGE_EVERY = 14 * DAY;
+async function addNotice(env: Env, title: string, body: string, url: string, userId: string | null = null): Promise<void> {
+  await run(env, 'INSERT INTO notices (title,body,url,user_id,created_at) VALUES (?,?,?,?,?)', title, body, url, userId, now());
+}
+route('GET', '/api/notices/key', async (req, env) => (env.VAPID_JWK ? json({ key: vapidPublicKey(JSON.parse(env.VAPID_JWK)) }) : fail(503, 'Bildirishnoma sozlanmagan')));
+route('POST', '/api/notices/subscribe', async (req, env, { user }) => {
+  const b = await body(req);
+  const kind = b.kind === 'android' ? 'android' : 'web', endpoint = str(b.endpoint, 1000);
+  if (kind === 'web' ? !/^https:\/\/[^\s]+$/.test(endpoint) : !/^[0-9a-f]{32,64}$/.test(endpoint)) return fail(400, 'Qurilma manzili noto\'g\'ri');
+  const top = (await one(env, 'SELECT COALESCE(MAX(id),0) m FROM notices')).m; // old news is not sent to a new device
+  await run(env, `INSERT INTO push_subs (id,user_id,kind,endpoint,seen,tickled,created_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id`, await sha256(endpoint), user.id, kind, endpoint, top, top, now());
+  return json({ ok: true }, 201);
+});
+route('POST', '/api/notices/unsubscribe', async (req, env) => {
+  await run(env, 'DELETE FROM push_subs WHERE id=?', await sha256(str((await body(req)).endpoint, 1000)));
+  return json({ ok: true });
+}, null);
+// Called by the device itself, which has no session in the background. Its long private address is its proof.
+route('POST', '/api/notices/next', async (req, env) => {
+  const sub = await first(env, 'SELECT * FROM push_subs WHERE id=?', await sha256(str((await body(req)).endpoint, 1000)));
+  if (!sub) return json({ notice: null });
+  const n = await first(env, 'SELECT id,title,body,url FROM notices WHERE id>? AND (user_id IS NULL OR user_id=?) ORDER BY id DESC LIMIT 1', sub.seen, sub.user_id);
+  if (!n) return json({ notice: null });
+  await run(env, 'UPDATE push_subs SET seen=?,tickled=MAX(tickled,?) WHERE id=?', n.id, n.id, sub.id); // several unread become one message, the newest
+  return json({ notice: { title: n.title, body: n.body, url: n.url } });
+}, null);
+route('GET', '/api/admin/notices', async (req, env) => json({
+  devices: (await one(env, 'SELECT COUNT(*) c FROM push_subs')).c,
+  notices: await all(env, 'SELECT id,title,body,url,created_at FROM notices WHERE user_id IS NULL ORDER BY id DESC LIMIT 30'),
+}), 'admin');
+route('POST', '/api/admin/notices', async (req, env) => {
+  const b = await body(req);
+  const title = str(b.title, 80);
+  if (!title) return fail(400, 'Sarlavhani kiriting');
+  const url = str(b.url, 200) || '/';
+  if (!url.startsWith('/') || url.startsWith('//')) return fail(400, 'Havola "/" bilan boshlansin');
+  await addNotice(env, title, str(b.body, 200), url);
+  return json({ ok: true }, 201);
+}, 'admin');
+async function deliverPush(env: Env): Promise<void> {
+  if (!env.VAPID_JWK) return;
+  const jwk = JSON.parse(env.VAPID_JWK), t = now();
+  // shortcut: 40 devices a minute fits the free plan's request limit; raise it on Workers Paid when devices outgrow it.
+  const subs = await all(env, `SELECT s.id,s.endpoint,(SELECT MAX(n.id) FROM notices n WHERE n.id>s.tickled AND (n.user_id IS NULL OR n.user_id=s.user_id)) top
+    FROM push_subs s WHERE s.kind='web' AND EXISTS (SELECT 1 FROM notices n WHERE n.id>s.tickled AND (n.user_id IS NULL OR n.user_id=s.user_id)) LIMIT 40`);
+  await Promise.all(subs.map(async sub => {
+    try {
+      const res = await fetch(sub.endpoint, { method: 'POST', headers: { authorization: await vapidHeader(jwk, sub.endpoint, PUSH_CONTACT, t), ttl: '86400', urgency: 'normal', 'content-length': '0' } });
+      if (res.status === 404 || res.status === 410) await run(env, 'DELETE FROM push_subs WHERE id=?', sub.id); // the device left
+      else if (res.ok) await run(env, 'UPDATE push_subs SET tickled=? WHERE id=?', sub.top, sub.id);
+    } catch (e) { console.error(e); }
+  }));
+}
+// People away for a week get one gentle reminder, then at most one every two weeks.
+async function nudgeAway(env: Env): Promise<void> {
+  const t = now(), s = await settings(env);
+  const away = await all(env, `SELECT u.id FROM users u WHERE u.banned=0 AND u.last_seen<? AND u.nudged_at<? AND u.last_seen>0 AND EXISTS (SELECT 1 FROM push_subs p WHERE p.user_id=u.id) LIMIT 200`, t - NUDGE_AFTER, t - NUDGE_EVERY);
+  const fresh = await first(env, 'SELECT title FROM tracks WHERE published=1 ORDER BY created_at DESC LIMIT 1');
+  for (const u of away) {
+    await addNotice(env, `${s.site_name} sizni kutmoqda`, fresh ? `Yangi musiqalar bor. "${fresh.title}"ni tinglab ko'ring.` : 'Sevimli qo\'shiqlaringizga qayting.', '/', u.id);
+    await run(env, 'UPDATE users SET nudged_at=? WHERE id=?', t, u.id);
+  }
+}
+
 // ---------- media ----------
 async function serveObject(env: Env, req: Request, key: string, contentType: string, extra: Record<string, string> = {}): Promise<Response> {
   const head = await env.BUCKET.head(key);
@@ -753,6 +822,7 @@ route('POST', '/api/admin/tracks', async (req, env) => {
   const artist = await artistId(env, b.artist);
   const album = await albumId(env, b.album, artist, cover, b.year ? int(b.year, 1900, 2100, 'Yil') : null);
   const id = uid();
+  if (b.published !== false && b.notify !== false) await addNotice(env, 'Yangi qo\'shiq', `${title} — ${str(b.artist, 100)}`, '/');
   await run(env, 'INSERT INTO tracks (id,title,artist_id,album_id,genre,cover_key,audio_key,size,duration,sample_rate,bit_depth,channels,lyrics,published,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     id, title, artist, album, str(b.genre, 60), cover, key, w.size, w.duration, w.sampleRate, w.bitDepth, w.channels, str(b.lyrics, 20000), b.published === false ? 0 : 1, now());
   return json({ id }, 201);
@@ -992,7 +1062,7 @@ route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
 // D1 has a hard 10 GB limit. Stats read 30 days of plays; all-time counts live on tracks.play_count.
 async function cleanup(env: Env): Promise<void> {
   const t = now();
-  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t], ['signups', 'expires', t]];
+  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t], ['signups', 'expires', t], ['notices', 'created_at', t - 60 * DAY]];
   for (const [table, col, before] of jobs) {
     for (let i = 0; i < 20; i++) {
       const r = await run(env, `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${col}<? LIMIT 20000)`, before);
@@ -1002,7 +1072,10 @@ async function cleanup(env: Env): Promise<void> {
 }
 
 export default {
-  scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) { ctx.waitUntil(cleanup(env)); },
+  scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    if (event.cron === '17 3 * * *') ctx.waitUntil(Promise.all([cleanup(env), nudgeAway(env)]));
+    else ctx.waitUntil(deliverPush(env));
+  },
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {

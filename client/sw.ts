@@ -92,3 +92,16 @@ sw.addEventListener('message', e => {
   if (m.type === 'cancel') for (const [id, c] of inflight) if (id !== m.keep) c.abort();
   if (m.type === 'clear') { for (const c of inflight.values()) c.abort(); e.waitUntil(caches.delete(CACHE)); }
 });
+
+// Pushes are empty on purpose: the device asks which message is for it. iOS requires a visible notification for every push.
+sw.addEventListener('push', e => e.waitUntil((async () => {
+  const sub = await sw.registration.pushManager.getSubscription();
+  let n: { title: string; body: string; url: string } | null = null;
+  try { n = sub ? (await (await fetch('/api/notices/next', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) })).json()).notice : null; } catch { /* offline: the generic line below */ }
+  await sw.registration.showNotification(n?.title || 'SvRvS Rythm', { body: n?.body || 'Yangi musiqalar sizni kutmoqda', icon: '/icon-512.png', badge: '/icon-512.png', tag: 'rythm', data: { url: n?.url || '/' } });
+})()));
+sw.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data?.url as string) || '/', location.origin).href;
+  e.waitUntil(sw.clients.matchAll({ type: 'window' }).then(list => { const open = list.find(c => 'focus' in c) as WindowClient | undefined; return open ? open.focus().then(c => c.navigate(url)) : sw.clients.openWindow(url); }));
+});

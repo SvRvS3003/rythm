@@ -57,9 +57,9 @@ export const icon = (name: string, size = 22): SVGSVGElement => {
 // Temporary page data: a page opens at once from here, refreshes behind the scenes, and a newer answer replaces the old one.
 const store = new Map<string, { json: string; at: number }>();
 const FRESH_MS = 15000;
-const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users|admin\/fingerprints|offline)/; // live or one-off answers
+const NEVER = /^\/api\/(search|app\/latest|auth|tracks\/|admin\/users|admin\/fingerprints|admin\/notices|notices|offline)/; // live or one-off answers
 const KEEP = ['/api/me', '/api/home', '/api/library', '/api/plans']; // also survive closing the app, so it opens instantly
-const NO_INVALIDATE = /^\/api\/(play$|plays\/|ads\/|me\/seen)/; // frequent writes that change no page
+const NO_INVALIDATE = /^\/api\/(play$|plays\/|ads\/|me\/seen|notices\/)/; // frequent writes that change no page
 const pending = new Map<string, Promise<unknown>>();
 try { for (const k of KEEP) { const v = localStorage.getItem(`page:${k}`); if (v) store.set(k, { json: v, at: 0 }); } } catch { /* private mode */ }
 function dropPages(all: boolean): void {
@@ -988,7 +988,8 @@ const V: Record<string, View> = {
     const inset = getComputedStyle(probe);
     const diag = `ekran ${screen.width}x${screen.height} | oyna ${innerWidth}x${innerHeight} | body ${document.body.clientHeight} | safe ${inset.paddingTop}/${inset.paddingBottom} | standalone ${nav.standalone === true}`;
     probe.remove();
-    el.append(...nodes([h('h1', null, 'Akkaunt'),
+    const push = await pushPanel().catch(() => null);
+    el.append(...nodes([h('h1', null, 'Akkaunt'), push,
       h('form', { class: 'panel', onsubmit: guard(async (ev: Event) => { ev.preventDefault(); await api('/api/me', { method: 'PATCH', body: { name: name.value } }); u.name = name.value; toast('Saqlandi'); }) },
         h('div', { class: 'row between wrap' }, h('div', { class: 'grow' }, h('h3', { class: 'clip' }, u.email)), h('span', { class: 'tag' }, label)),
         h('label', { class: 'f' }, 'Ism', name), h('button', { class: 'btn light' }, 'Saqlash')),
@@ -1061,6 +1062,38 @@ V.offline = async el => {
   })));
 };
 offline.onChange(() => { if (location.pathname === '/offline' && mainEl && !document.querySelector('.sheet')) route(true); });
+// Notifications. iOS offers them only inside the app installed on the home screen, and only after a tap.
+const pushSupported = (): boolean => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function b64ToBytes(s: string): Uint8Array<ArrayBuffer> { return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=')), c => c.charCodeAt(0)) as Uint8Array<ArrayBuffer>; }
+async function enablePush(): Promise<void> {
+  if ((await Notification.requestPermission()) !== 'granted') throw new Error('Bildirishnomaga ruxsat berilmadi. Telefon sozlamalaridan yoqish mumkin.');
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await api('/api/notices/key');
+  const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await api('/api/notices/subscribe', { method: 'POST', body: { kind: 'web', endpoint: sub.endpoint } });
+}
+async function disablePush(): Promise<void> {
+  const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (sub) { await api('/api/notices/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }); await sub.unsubscribe(); }
+}
+async function pushPanel(): Promise<HTMLElement> {
+  const iosBrowser = /iPhone|iPad|iPod/.test(navigator.userAgent) && !nav.standalone;
+  const box = h('section', { class: 'panel' }, h('h2', null, 'Bildirishnomalar'));
+  if (win.RythmNative?.pushToken) { box.append(h('p', { class: 'muted small' }, 'Ilova yangi qo\'shiqlar haqida o\'zi xabar beradi. Telefon sozlamalaridan o\'chirish mumkin.')); return box; }
+  if (iosBrowser) { box.append(h('p', { class: 'muted small' }, 'iPhone\'da bildirishnoma faqat bosh ekranga o\'rnatilgan ilovada ishlaydi. Avval ilovani o\'rnating va shu yerdan yoqing.'), h('a', { class: 'btn sm', href: '/install' }, 'Ilovani o\'rnatish')); return box; }
+  if (!pushSupported()) { box.append(h('p', { class: 'muted small' }, 'Bu qurilma bildirishnomani qo\'llamaydi.')); return box; }
+  // The page never waits for this answer: some engines never give one. The panel appears first and corrects itself if it comes.
+  let on = false;
+  const note = h('p', { class: 'muted small' }, 'Yangi qo\'shiqlardan birinchi bo\'lib xabar oling.');
+  const btn = h('button', { class: 'btn pri', onclick: guard(async () => { if (on) await disablePush(); else await enablePush(); toast(on ? 'O\'chirildi' : 'Yoqildi'); route(true); }) }, 'Yoqish');
+  box.append(note, btn);
+  // Without permission there can be no subscription, so the question is not asked at all.
+  if (Notification.permission === 'granted') navigator.serviceWorker.getRegistration().then(r => r?.pushManager.getSubscription()).then(sub => {
+    if (!sub) return;
+    on = true; note.textContent = 'Yoqilgan: yangi qo\'shiqlar haqida xabar olasiz.'; btn.textContent = 'O\'chirish'; btn.className = 'btn';
+  }).catch(() => {});
+  return box;
+}
 function newPlaylist() {
   sheet(close => {
     const n = h('input', { placeholder: 'Pleylist nomi', 'aria-label': 'Pleylist nomi', required: true });
@@ -1298,6 +1331,8 @@ async function boot(): Promise<void> {
   if (lib) { S.liked = new Set(lib.liked); S.playlists = lib.playlists; }
   if (S.user) restoreListening();
   render();
+  // The Android app has no browser push; it registers its own token and polls in the background.
+  if (S.user && win.RythmNative?.pushToken) api('/api/notices/subscribe', { method: 'POST', body: { kind: 'android', endpoint: win.RythmNative.pushToken() } }).catch(() => {});
   if (S.user) { checkUpdate(); setTimeout(loadAllPages, 300); playFromLink(); if (navigator.onLine) refreshOffline(); }
 }
 boot().catch((e: Error) => root.replaceChildren(h('div', { class: 'auth' }, h('div', { class: 'panel' }, h('p', { class: 'err' }, e.message), h('button', { class: 'btn', onclick: () => location.reload() }, 'Qayta urinish')))));

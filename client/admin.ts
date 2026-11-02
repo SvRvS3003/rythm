@@ -4,7 +4,7 @@ import { compare, makeFingerprint, type Comparison, type Fingerprint } from './f
 import { h, api, cover, fmt, money, toast, sheet, refresh, go, S, type Row } from './app.ts';
 
 const guard = <A extends unknown[]>(fn: (...a: A) => unknown) => async (...a: A): Promise<void> => { try { await fn(...a); } catch (e) { toast((e as Error).message); } };
-const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['api', 'API'], ['settings', 'Sozlamalar']];
+const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['notices', 'Bildirishnoma'], ['api', 'API'], ['settings', 'Sozlamalar']];
 const field = (label: string, input: Node) => h('label', { class: 'f' }, label, input);
 const date = (t: number): string => (t ? new Date(t * 1000).toLocaleDateString('ru-RU') : '—');
 const gb = (b: number): string => (b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`);
@@ -325,6 +325,17 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
     el.append(list, h('section', { class: 'panel' }, h('h2', null, 'Endpointlar'),
       h('pre', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:0' }, `curl ${location.origin}/api/admin/stats -H "Authorization: Bearer rk_..."`),
       docs.endpoints.map((d: Row) => h('div', { class: 'small', style: 'overflow-wrap:anywhere;font-variant-numeric:tabular-nums' }, h('b', { style: 'display:inline-block;width:62px' }, d.method), d.path))));
+  },
+
+  async notices(el) {
+    const d = await api('/api/admin/notices');
+    const title = h('input', { required: true, maxlength: 80, placeholder: 'Masalan: Yangi albom chiqdi', 'aria-label': 'Sarlavha' }), text = h('input', { maxlength: 200, placeholder: 'Qisqa matn', 'aria-label': 'Matn' }), url = h('input', { placeholder: '/', 'aria-label': 'Ochiladigan sahifa' });
+    el.append(h('form', { class: 'panel', onsubmit: guard(async (e: Event) => {
+      e.preventDefault();
+      await api('/api/admin/notices', { method: 'POST', body: { title: title.value, body: text.value, url: url.value } });
+      toast('Yuborildi: qurilmalarga navbat bilan yetib boradi'); refresh();
+    }) }, h('h2', null, 'Hammaga xabar yuborish'), h('p', { class: 'muted small' }, `Ulangan qurilmalar: ${d.devices} ta. Yangi qo'shiq yuklanganda xabar o'zi ketadi. Uzoq vaqt kirmaganlarga ham eslatma boradi.`), field('Sarlavha', title), field('Matn', text), field('Bosganda ochiladigan sahifa', url), h('button', { class: 'btn pri' }, 'Yuborish')),
+      h('section', { class: 'panel' }, h('h2', null, 'Oxirgi xabarlar'), d.notices.length ? d.notices.map((n: Row) => h('div', { class: 'item' }, h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, n.title), h('div', { class: 'small muted', style: 'overflow-wrap:anywhere' }, n.body), h('div', { class: 'small dim' }, date(n.created_at))))) : h('p', { class: 'muted' }, 'Hali xabar yo\'q.')));
   },
 
   async settings(el) {

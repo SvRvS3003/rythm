@@ -13,7 +13,7 @@
   "d1_databases": [{ "binding": "DB", "database_name": "rythm", "database_id": "e5c05a2a-3cbb-4fd4-a48e-305cb9968536", "migrations_dir": "migrations" }],
   "workers_dev": true,
   "routes": [{ "pattern": "rythm.svrvs.uz", "custom_domain": true }],
-  "triggers": { "crons": ["17 3 * * *"] },
+  "triggers": { "crons": ["17 3 * * *", "* * * * *"] },
   "send_email": [{ "name": "EMAIL" }],
   "observability": { "enabled": true }
 }

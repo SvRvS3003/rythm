@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
         });
         web.setDownloadListener((url, ua, cd, mime, len) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))));
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        PollJob.schedule(this);
         if (state != null) web.restoreState(state);
         else web.loadUrl(BuildConfig.BASE_URL + "/");
     }
@@ -95,6 +96,7 @@ public class MainActivity extends Activity {
 
     final class Bridge {
         @JavascriptInterface public int versionCode() { return BuildConfig.VERSION_CODE; }
+        @JavascriptInterface public String pushToken() { return PollJob.token(MainActivity.this); }
 
         @JavascriptInterface public void updateMedia(String json) {
             try {
