@@ -1,4 +1,3 @@
-// Java, InstallReceiver.java, Android 8+: forwards the system install confirmation to the user.
 package uz.svrvs.rythm;
 
 import android.content.BroadcastReceiver;

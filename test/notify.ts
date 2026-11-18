@@ -1,4 +1,3 @@
-// TypeScript, test/notify.ts, node: delivery end to end against `wrangler dev --test-scheduled`, with a local server playing the push service. Silent: no sound, no browser.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -15,7 +14,7 @@ try {
   await u('/api/auth/register', { name: 'U', email: `n${stamp}@test.uz`, password: 'parol12345' });
   await v('/api/auth/register', { name: 'V', email: `m${stamp}@test.uz`, password: 'parol12345' });
   const key = await u('/api/notices/key'); assert.equal(Buffer.from(key.key, 'base64url').length, 65);
-  // Real devices need https, so the test subscribes normally and then points the row at the local stand-in for the push service.
+
   const ep = (p: string) => `https://push.example.test${p}`;
   assert.equal((await u('/api/notices/subscribe', { kind: 'web', endpoint: 'ftp://nope' })).s, 400);
   assert.equal((await u('/api/notices/subscribe', { kind: 'web', endpoint: 'http://127.0.0.1:9911/x' })).s, 400);
@@ -36,14 +35,14 @@ try {
   gone = true; await admin('/api/admin/notices', { title: 'Ikkinchi' }); await tick();
   await admin('/api/admin/notices', { title: 'Uchinchi' }); const before = hits.filter(h => h.path === '/old').length; await tick();
   assert.equal(hits.filter(h => h.path === '/old').length, before, 'a device that left must be dropped'); console.log('  ok a device that left is removed');
-  // Android: no push service, the app simply asks.
+
   const tok = `${stamp}`.padEnd(32, 'a').replace(/[^0-9a-f]/g, 'a');
   assert.equal((await u('/api/notices/subscribe', { kind: 'android', endpoint: tok })).s, 201);
   await admin('/api/admin/notices', { title: 'Android xabar' });
   const hitsBefore = hits.length;
   const a1 = await fetch(`${BASE}/api/notices/next`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: tok }) }).then(r => r.json());
   assert.equal(a1.notice.title, 'Android xabar'); assert.equal(hits.slice(hitsBefore).some(h => h.path.includes(tok)), false); console.log('  ok Android polling works without a session');
-  // Away for a week: one reminder, not repeated.
+
   const uid = (await u('/api/me')).user.id;
   console.log(`AWAY_USER=${uid} TOKEN=${tok}`);
 } finally { srv.close(); }

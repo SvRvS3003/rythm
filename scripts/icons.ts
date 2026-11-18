@@ -1,4 +1,3 @@
-// JavaScript, scripts/icons.ts, node + playwright: renders icon.svg to the PNGs iOS and Android require.
 import { chromium } from 'playwright';
 import { readFileSync, mkdirSync } from 'node:fs';
 const svg = readFileSync('web/icon.svg', 'utf8');

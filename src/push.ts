@@ -1,4 +1,3 @@
-// TypeScript, src/push.ts, Workers and node: signs Web Push requests (VAPID, RFC 8292). Pushes carry no data; the device asks for its message.
 const b64u = (b: ArrayBuffer | Uint8Array): string => btoa(String.fromCharCode(...new Uint8Array(b as ArrayBuffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const fromB64u = (s: string): Uint8Array => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 

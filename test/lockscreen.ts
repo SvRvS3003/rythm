@@ -1,4 +1,3 @@
-// TypeScript, test/lockscreen.ts, node + playwright: while hidden, a song without a cover hands the OS changing logo frames.
 import { MUTE_ARGS, silence } from './silent.ts';
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
@@ -25,7 +24,7 @@ const id = await p.evaluate(async b64 => {
   return (await (await fetch('/api/admin/tracks', { method: 'POST', headers: j, body: JSON.stringify({ key: st.key, title: 'QulfSinov', artist: 'LS' }) })).json()).id;
 }, readFileSync(f).toString('base64'));
 try {
-  // A beat map loud in even seconds and silent in odd ones: the picture must pulse exactly with it.
+
   await p.evaluate(async i => {
     const map = new Uint8Array(40 * 20 * 16);
     for (let f = 0; f < 800; f++) if (Math.floor(f / 20) % 2 === 0) map.fill(255, f * 16, (f + 1) * 16);
@@ -39,10 +38,10 @@ try {
   const seen = new Set<string>();
   for (let i = 0; i < 16; i++) { await p.waitForTimeout(500); seen.add(await art()); }
   assert.ok([...seen].every(s => s.startsWith('data:image/png') || !s.startsWith('data:')), 'frames are images');
-  assert.ok(seen.size >= 2, `only ${seen.size} different frames`); // this test map has just two levels
+  assert.ok(seen.size >= 2, `only ${seen.size} different frames`);
   const meta = await p.evaluate(() => ({ t: navigator.mediaSession.metadata?.title, a: navigator.mediaSession.metadata?.artist }));
   assert.deepEqual(meta, { t: 'QulfSinov', a: 'LS' });
-  // Measure the middle bar in the frame the OS would show, against the song position.
+
   const sample = () => p.evaluate(async () => {
     const pos = (window as any).__a?.currentTime ?? 0, src = navigator.mediaSession.metadata?.artwork[0]?.src || '';
     const img = new Image(); img.src = src; await img.decode();
@@ -63,11 +62,11 @@ try {
   assert.ok(loud.length && quiet.length, 'not enough samples');
   assert.ok(avg(loud) > avg(quiet) + 60, `picture does not follow the beat map: loud ${avg(loud).toFixed(0)} vs quiet ${avg(quiet).toFixed(0)}`);
   console.log(`ok bar follows the song: ${avg(loud).toFixed(0)} px on loud, ${avg(quiet).toFixed(0)} px on quiet`);
-  // The picture may change no faster than 3 times a second, or iOS blanks it.
+
   const rate = await p.evaluate(() => new Promise<number>(res => { let n = 0, last = navigator.mediaSession.metadata?.artwork[0]?.src; const t0 = performance.now(); const id = setInterval(() => { const s = navigator.mediaSession.metadata?.artwork[0]?.src; if (s !== last) { n++; last = s; } if (performance.now() - t0 > 6000) { clearInterval(id); res(n / 6); } }, 20); }));
   assert.ok(rate > 0.5 && rate <= 3.3, `picture rate ${rate.toFixed(1)}/s`);
   console.log(`ok picture changes ${rate.toFixed(1)} times a second`);
-  // Lock screen buttons: pause then play must work, also when a command arrives twice.
+
   const isPaused = () => p.evaluate(() => (window as any).__a.paused);
   const cmd = (n: string) => p.evaluate(c => (window as any).__ms[c](), n);
   await cmd('pause'); await p.waitForTimeout(300); assert.equal(await isPaused(), true);

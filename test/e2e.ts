@@ -1,4 +1,3 @@
-// JavaScript, test/e2e.ts, node: API checks against a running `npm run dev`. Usage: node test/e2e.ts [base] [adminPassword] [adminLogin]
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync } from 'node:fs';
@@ -39,7 +38,7 @@ async function upload(buf, kind = 'audio') {
   }
   return J(admin('/api/admin/uploads/complete', { method: 'POST', body: { key: st.key, uploadId: st.uploadId, parts } }));
 }
-// Rejected formats
+
 const mp3 = ff('a.mp3', ['-f', 'lavfi', '-i', 'sine=440:duration=2']);
 assert.equal((await upload(mp3)).s, 415);
 const flac = ff('a.flac', ['-f', 'lavfi', '-i', 'sine=440:duration=2']);
@@ -47,7 +46,7 @@ assert.equal((await upload(flac)).s, 415);
 const mp3InWav = ff('b.wav', ['-f', 'lavfi', '-i', 'sine=440:duration=2', '-c:a', 'libmp3lame']);
 assert.equal((await upload(mp3InWav)).s, 415);
 ok('mp3, flac and mp3-inside-.wav rejected by the server');
-// Real multipart upload over 20 MB, 24-bit/96k, must round-trip byte-identical.
+
 const big = ff('big.wav', ['-f', 'lavfi', '-i', 'sine=330:duration=50:sample_rate=96000', '-af', 'aformat=channel_layouts=stereo', '-c:a', 'pcm_s24le']);
 const up = await upload(big);
 assert.equal(up.s, 200); assert.equal(up.bitDepth, 24); assert.equal(up.sampleRate, 96000);
@@ -56,7 +55,7 @@ const svg = await J(admin('/api/admin/images', { method: 'POST', raw: '<svg onlo
 const png = await J(admin('/api/admin/images', { method: 'POST', raw: readFileSync('web/icon-512.png') })); assert.equal(png.s, 201); ok('svg refused, png stored');
 const T = await J(admin('/api/admin/tracks', { method: 'POST', body: { key: up.key, title: 'Sinov <b>qo\'shig\'i</b>', artist: 'Test Ijrochi', album: 'Birinchi', genre: 'Pop', coverKey: png.key, lyrics: 'matn' } }));
 assert.equal(T.s, 201);
-// Streaming
+
 const play = await J(user('/api/play', { method: 'POST', body: { trackId: T.id } }));
 assert.ok(play.url); assert.ok(!play.url.includes('audio/'));
 const full = await anon(play.url);
@@ -70,11 +69,11 @@ assert.equal((await anon(play.url, { headers: { range: `bytes=${big.length}-` } 
 assert.equal((await anon(play.url.replace(/s=[0-9a-f]+/, 's=' + '0'.repeat(64)))).status, 403);
 assert.equal((await anon(play.url.replace(/e=\d+/, 'e=9999999999'))).status, 403);
 assert.equal((await anon(`/media/${up.key}`)).status, 404); ok('tampered links refused, raw R2 key not public');
-// Early count refused
+
 const c1 = await J(user(`/api/plays/${play.playId}/counted`, { method: 'POST' })); assert.equal(c1.counted, false); ok('a play is not counted before listening time');
-// Ads: ad_every=3, one play already made.
-assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { ad_every: 3, ad_seconds: 3, plans_enabled: true } }))).s, 200);
-const settle = () => new Promise(r => setTimeout(r, 11000)); // settings cache TTL
+
+assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { ad_every: 3, ad_seconds: 5, plans_enabled: true } }))).s, 200);
+const settle = () => new Promise(r => setTimeout(r, 11000));
 await settle();
 const P = () => J(user('/api/play', { method: 'POST', body: { trackId: T.id } }));
 assert.ok((await P()).url); assert.ok((await P()).url);
@@ -86,11 +85,16 @@ ok('ad cannot be completed instantly');
 await new Promise(r => setTimeout(r, 3200));
 assert.equal((await J(user(`/api/ads/${adFresh.ad.viewId}/complete`, { method: 'POST' }))).s, 200);
 assert.ok((await P()).url); ok('after waiting, ad completes and playback resumes');
-// Plan toggle & exempt list
+
 assert.ok((await P()).url); assert.ok((await P()).url); assert.ok((await P()).ad);
 await J(admin('/api/admin/settings', { method: 'PATCH', body: { plans_enabled: false } }));
 await settle();
 assert.ok((await P()).url); assert.equal((await J(user('/api/me'))).user.entitlement.reason, 'plans_off'); ok('one toggle off: nobody gets ads');
+const adminEnt = (await J(admin('/api/me'))).user.entitlement;
+assert.equal(adminEnt.reason, 'admin'); assert.ok(adminEnt.planName, 'admin shows the top plan'); ok('admin keeps the top plan while plans are off');
+assert.equal((await J(user('/api/admin/diag', { method: 'PUT', raw: '{}' }))).s, 403);
+assert.equal((await J(admin('/api/admin/diag', { method: 'PUT', raw: '{"log":["x"]}' }))).s, 200);
+assert.equal((await J(admin('/api/admin/diag'))).log, '{"log":["x"]}'); ok('playback log: admin only, stored and read back');
 await J(admin('/api/admin/settings', { method: 'PATCH', body: { plans_enabled: true } }));
 await settle();
 assert.ok((await P()).ad);
@@ -98,7 +102,7 @@ const me = (await J(user('/api/me'))).user;
 await J(admin(`/api/admin/users/${me.id}`, { method: 'PATCH', body: { planExempt: true } }));
 assert.ok((await P()).url); assert.equal((await J(user('/api/me'))).user.entitlement.reason, 'exempt'); ok('exempt list skips plan and ads');
 await J(admin(`/api/admin/users/${me.id}`, { method: 'PATCH', body: { planExempt: false } }));
-// Payments
+
 assert.equal((await J(user('/api/payments', { method: 'POST', body: { planId: 'puls', reference: '1234' } }))).s, 201);
 assert.equal((await J(user('/api/payments', { method: 'POST', body: { planId: 'puls', reference: '1234' } }))).s, 409);
 const pay = (await J(admin('/api/admin/payments'))).payments.find(p => p.email === email);
@@ -107,7 +111,7 @@ const exp1 = (await J(user('/api/me'))).user.entitlement.expires;
 assert.equal((await J(admin(`/api/admin/payments/${pay.id}/approve`, { method: 'POST' }))).s, 409);
 assert.equal((await J(user('/api/me'))).user.entitlement.expires, exp1);
 assert.ok((await P()).url); ok('approve activates plan once; double click cannot extend it');
-// A listened play counts and reaches the stats.
+
 const shortWav = ff('s.wav', ['-f', 'lavfi', '-i', 'sine=500:duration=4']);
 const su = await upload(shortWav);
 const ST = await J(admin('/api/admin/tracks', { method: 'POST', body: { key: su.key, title: 'Qisqa', artist: 'Test Ijrochi' } }));
@@ -118,7 +122,7 @@ await J(user(`/api/plays/${sp.playId}/counted`, { method: 'POST' }));
 const topNow = (await J(admin('/api/admin/stats'))).top7.find(t => t.id === ST.id);
 assert.equal(topNow.plays, 1); ok('listened play counted exactly once and appears in top songs');
 await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
-// Click: signed calls only, exact amount, idempotent, cancels honoured.
+
 {
   const secret = 'test-secret-key', service = '101';
   assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { click_service_id: service, click_merchant_id: '202', click_secret: secret } }))).s, 200);
@@ -157,7 +161,7 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   await J(admin('/api/admin/settings', { method: 'PATCH', body: { click_service_id: '', click_merchant_id: '' } }));
   assert.equal((await J(buyer('/api/plans'))).click, false);
 }
-// Email code: account exists only after the right code; tries are limited.
+
 {
   const em = `code${Date.now()}@test.uz`, c1 = client();
   assert.equal((await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: 'not-an-email' } }))).s, 400);
@@ -179,7 +183,7 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   }
   await J(admin('/api/admin/settings', { method: 'PATCH', body: { email_from: '' } }));
 }
-// User list: total, paging, spreadsheet export, admin only.
+
 {
   const evil = client(), evilMail = `csv${Date.now()}@test.uz`;
   await evil('/api/auth/register', { method: 'POST', body: { name: '=HYPERLINK("x")', email: evilMail, password: 'parol12345' } });
@@ -199,7 +203,7 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   assert.ok(!(await J(admin('/api/admin/users?q=&filter=&offset=0'))).users.some((u: any) => u.id === victim));
   assert.equal((await J(evil('/api/me'))).user, null); ok('delete: admin only, must be blocked first, admin account protected, session ends');
 }
-// Admin API keys: full admin access for scripts, shown once, revocable, cannot manage keys.
+
 {
   const made = await J(admin('/api/admin/api-keys', { method: 'POST', body: { name: 'Skript' } }));
   assert.equal(made.s, 201); assert.match(made.key, /^rk_[0-9a-f]{64}$/);
@@ -221,7 +225,7 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
   await J(admin('/api/admin/settings', { method: 'PATCH', body: { hero_sub: "Har bir qo'shiq siqilmagan WAV formatida." } }));
   ok('API keys: admin access, shown once, revocable, cannot manage keys');
 }
-// Offline: follows the plan, enforces the song limit, keeps the listener's order.
+
 {
   const o = client(), mail = `off${Date.now()}@test.uz`;
   await o('/api/auth/register', { method: 'POST', body: { name: 'Oflayn', email: mail, password: 'parol12345' } });
@@ -256,26 +260,26 @@ await J(admin(`/api/admin/tracks/${ST.id}`, { method: 'DELETE' }));
     assert.equal((await J(admin('/api/offline'))).limit, -1); ok('admin has no offline limit');
   } finally { for (const id of wavs) await J(admin(`/api/admin/tracks/${id}`, { method: 'DELETE' })); }
 }
-// Family seats
+
 const friend = client(), fm = `f${Date.now()}@test.uz`;
 await friend('/api/auth/register', { method: 'POST', body: { name: 'Vali', email: fm, password: 'parol12345' } });
 assert.equal((await J(user('/api/family', { method: 'POST', body: { email: fm } }))).s, 409); ok('single-seat plan cannot add members');
 await J(admin(`/api/admin/users/${(await J(friend('/api/me'))).user.id}`, { method: 'PATCH', body: { banned: true } }));
 assert.equal((await J(friend('/api/me'))).user, null); ok('ban ends the session');
-// Stats, install, releases
+
 const stats = await J(admin('/api/admin/stats')); assert.ok(stats.users >= 2); assert.ok(stats.storage.bytes >= big.length);
 const mc = await anon('/dl/ios.mobileconfig'); assert.equal(mc.headers.get('content-type'), 'application/x-apple-aspen-config'); assert.match(await mc.text(), /com\.apple\.webClip\.managed/); ok('stats and iOS web clip profile');
 const cur = (await J(anon('/api/app/latest'))).release?.versionCode || 0;
 const apk = Buffer.concat([Buffer.from([0x50, 0x4b, 3, 4]), Buffer.alloc(100)]);
 assert.equal((await J(admin(`/api/admin/releases?versionCode=${cur + 1}&versionName=x`, { method: 'POST', raw: 'not apk' }))).s, 415);
 if (cur) assert.equal((await J(admin(`/api/admin/releases?versionCode=${cur}&versionName=x`, { method: 'POST', raw: apk }))).s, 409);
-else { // Never publish a fake build over a real release.
+else {
   assert.equal((await J(admin('/api/admin/releases?versionCode=1&versionName=9.9', { method: 'POST', raw: apk }))).s, 201);
   const l = (await J(anon('/api/app/latest'))).release; assert.equal((await anon('/dl/android')).status, 302);
   await J(admin(`/api/admin/releases/${l.id}`, { method: 'DELETE' }));
 }
 ok('APK release: magic checked, version must grow');
-// Beat map: admin only, must match the song's length, then served publicly with the track.
+
 const frames = Math.round(up.duration * 20), map = Buffer.alloc(frames * 16, 7);
 assert.equal((await J(user(`/api/admin/tracks/${T.id}/rhythm`, { method: 'PUT', raw: map }))).s, 403);
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}/rhythm`, { method: 'PUT', raw: Buffer.alloc(160) }))).s, 400);
@@ -292,7 +296,7 @@ assert.equal((await J(user(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'P
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'PUT', body: { fp: { h: 1 } } }))).s, 400);
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}/fingerprint`, { method: 'PUT', body: { fp: { h: 'AA==', p: Array(16).fill(1), t: 120, s: 1, d: 50 } } }))).s, 200);
 assert.ok((await J(admin('/api/admin/fingerprints'))).tracks.some((x: any) => x.id === T.id)); assert.equal((await J(user('/api/admin/fingerprints'))).s, 403); ok('fingerprints: admin only, validated');
-// Delete removes the R2 object
+
 assert.equal((await J(admin(`/api/admin/tracks/${T.id}`, { method: 'DELETE' }))).s, 200);
 assert.equal((await anon(play.url)).status, 404); ok('deleting a track removes it');
 console.log(`all ${n} checks passed`);

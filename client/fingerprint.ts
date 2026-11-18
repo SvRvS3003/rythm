@@ -1,14 +1,12 @@
-// TypeScript, client/fingerprint.ts, browser and node: decides whether two recordings are the same song by how they sound. Names play no part.
 import { BANDS, FPS } from './rhythm.ts';
 
-export interface Fingerprint { h: string; p: number[]; t: number; s: number; d: number } // hash, band loudness, tempo, tempo strength, seconds
-const STEP = 4; // 20 map frames a second become 5 hash frames a second
+export interface Fingerprint { h: string; p: number[]; t: number; s: number; d: number }
+const STEP = 4;
 export const HASH_FPS = FPS / STEP;
 
 const b64 = (u: Uint16Array): string => btoa(String.fromCharCode(...new Uint8Array(u.buffer)));
 const unb64 = (s: string): Uint16Array => { const b = Uint8Array.from(atob(s), c => c.charCodeAt(0)); return new Uint16Array(b.buffer, b.byteOffset, b.length >> 1); };
 
-// Tempo from how often energy jumps: survives a change of volume or format.
 function tempo(map: Uint8Array): { bpm: number; strength: number } {
   const frames = Math.floor(map.length / BANDS), flux = new Float64Array(frames);
   for (let f = 1; f < frames; f++) { let v = 0; for (let b = 0; b < BANDS; b++) v += Math.max(0, map[f * BANDS + b] - map[(f - 1) * BANDS + b]); flux[f] = v; }
@@ -32,7 +30,7 @@ export function makeFingerprint(map: Uint8Array, bandPeaks: number[]): Fingerpri
     let bits = 0;
     for (let b = 0; b < BANDS - 1; b++) {
       const d = (e[t * BANDS + b] - e[t * BANDS + b + 1]) - (e[(t - 1) * BANDS + b] - e[(t - 1) * BANDS + b + 1]);
-      if (d > 2) bits |= 1 << b; // below this is rounding noise, not music
+      if (d > 2) bits |= 1 << b;
     }
     hash[t - 1] = bits;
   }
@@ -42,7 +40,7 @@ export function makeFingerprint(map: Uint8Array, bandPeaks: number[]): Fingerpri
 
 const BITS = new Uint8Array(65536);
 for (let i = 1; i < 65536; i++) BITS[i] = BITS[i >> 1] + (i & 1);
-// Share of frames whose picture changes at all: a steady tone has none, and its hash says nothing.
+
 function activity(h: Uint16Array): number {
   let on = 0;
   for (let i = 0; i < h.length; i++) if (h[i]) on++;
@@ -62,7 +60,7 @@ function bestAlignment(a: Uint16Array, b: Uint16Array): { score: number; overlap
     }
   };
   let bestOff = 0;
-  // Coarse look across every position, then exact around the best one, keeps a large catalogue quick.
+
   scan(-a.length, b.length, 4, 1);
   scan(bestOff - 2, bestOff + 2, 1, 1);
   return { score, overlap };
@@ -74,7 +72,7 @@ const cosine = (x: number[], y: number[]): number => {
 };
 function rhythmMatch(a: Fingerprint, b: Fingerprint): number {
   if (!a.t || !b.t || a.s < 0.08 || b.s < 0.08) return 0;
-  // Half and double tempo are the same pulse counted differently.
+
   const r = Math.min(...[1, 2, 0.5].map(k => Math.abs(a.t * k - b.t) / b.t));
   return Math.max(0, 1 - r / 0.06);
 }
@@ -85,8 +83,8 @@ export function compare(x: Fingerprint, y: Fingerprint): Comparison {
   const { score, overlap } = lively ? bestAlignment(a, b) : { score: 0, overlap: 0 };
   const overlapSeconds = overlap / HASH_FPS;
   let level: Comparison['level'] = 'different';
-  // A shared beat alone can score high, so the song must also have the same balance of frequencies.
-  if (lively ? score >= 0.72 && frequency >= 0.97 : frequency > 0.9995 && Math.abs(x.d - y.d) <= 2) level = 'same'; // steady tones have only their pitch to compare
+
+  if (lively ? score >= 0.72 && frequency >= 0.97 : frequency > 0.9995 && Math.abs(x.d - y.d) <= 2) level = 'same';
   else if ((lively && score >= 0.68) || (frequency > 0.985 && rhythm > 0.8)) level = 'similar';
   return { level, sound: score, frequency, rhythm, overlapSeconds };
 }

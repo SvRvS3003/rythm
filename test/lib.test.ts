@@ -63,7 +63,7 @@ test('beat map follows the real bass hits in the PCM', () => {
     const w = wav({ bits, rate, ch: 1, dataSize: n * bits / 8 });
     const v = new DataView(w.buffer), start = w.length - n * bits / 8;
     for (let i = 0; i < n; i++) {
-      const on = (i / rate) % 0.5 < 0.1; // a 100 ms, 80 Hz hit every half second
+      const on = (i / rate) % 0.5 < 0.1;
       const s = on ? Math.sin(2 * Math.PI * 80 * i / rate) * 0.9 : 0;
       const p = start + i * bits / 8;
       if (bits === 16) v.setInt16(p, s * 32767, true);

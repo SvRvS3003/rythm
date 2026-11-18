@@ -11,3 +11,4 @@ dist/
 .prod.vars
 .playwright-mcp/
 .DS_Store
+webkit/

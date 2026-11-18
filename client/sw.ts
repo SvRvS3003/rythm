@@ -1,5 +1,3 @@
-// TypeScript, client/sw.ts, service worker: keeps upcoming WAVs on the device and serves them with byte ranges.
-// Only tracks the page explicitly prefetches are stored; a live stream is never duplicated.
 import { CHUNK, deviceKey, get, licenseOpen, openChunk, type License, type OfflineRecord } from './offline-store.ts';
 
 declare const BUILD_ID: string, SHELL_FILES: string[];
@@ -9,11 +7,9 @@ const CACHE = 'rythm-audio', MAX_BYTES = 1.5e9;
 const inflight = new Map<string, AbortController>();
 const key = (id: string): string => `/audio/${id}`;
 
-// The whole app installs as one version, so it opens instantly and a deploy can never mix old and new files.
 sw.addEventListener('install', e => e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES)).then(() => sw.skipWaiting())));
 sw.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('rythm-shell-') && k !== SHELL).map(k => caches.delete(k)))).then(() => sw.clients.claim())));
 
-// Saved songs are decrypted only here, piece by piece as they play, and only while the plan's licence is open.
 async function serveOffline(req: Request, id: string): Promise<Response> {
   const [song, license, key] = await Promise.all([get<OfflineRecord>('songs', id), get<License>('meta', 'license'), deviceKey(false)]);
   if (!song?.done || !key || !licenseOpen(license, id)) return new Response(null, { status: 403 });
@@ -48,7 +44,6 @@ sw.addEventListener('fetch', e => {
   if (asset) e.respondWith(caches.open(SHELL).then(c => c.match(asset)).then(r => r || fetch(e.request)));
 });
 
-// The page only holds this URL after /api/play approved it, so the cache cannot bypass the ad gate.
 async function serve(req: Request, id: string): Promise<Response> {
   const hit = await (await caches.open(CACHE)).match(key(id));
   if (!hit) return fetch(req);
@@ -63,7 +58,7 @@ async function serve(req: Request, id: string): Promise<Response> {
 }
 
 async function trim(cache: Cache): Promise<void> {
-  const keys = await cache.keys(); // oldest first
+  const keys = await cache.keys();
   const sizes = await Promise.all(keys.map(async k => (await (await cache.match(k))!.blob()).size));
   let total = sizes.reduce((a, b) => a + b, 0), i = 0;
   while (total > MAX_BYTES && i < keys.length - 1) { await cache.delete(keys[i]); total -= sizes[i++]; }
@@ -83,7 +78,7 @@ async function prefetch(id: string, url: string, client: Client | ServiceWorker 
     await cache.put(key(id), new Response(blob, { headers: { 'content-type': 'audio/wav' } }));
     await trim(cache);
     client?.postMessage({ type: 'cached', id, bytes: blob.size, ms: Date.now() - t0 });
-  } catch { /* aborted or offline: the page falls back to the network */ } finally { inflight.delete(id); }
+  } catch {  } finally { inflight.delete(id); }
 }
 
 sw.addEventListener('message', e => {
@@ -93,11 +88,10 @@ sw.addEventListener('message', e => {
   if (m.type === 'clear') { for (const c of inflight.values()) c.abort(); e.waitUntil(caches.delete(CACHE)); }
 });
 
-// Pushes are empty on purpose: the device asks which message is for it. iOS requires a visible notification for every push.
 sw.addEventListener('push', e => e.waitUntil((async () => {
   const sub = await sw.registration.pushManager.getSubscription();
   let n: { title: string; body: string; url: string } | null = null;
-  try { n = sub ? (await (await fetch('/api/notices/next', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) })).json()).notice : null; } catch { /* offline: the generic line below */ }
+  try { n = sub ? (await (await fetch('/api/notices/next', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) })).json()).notice : null; } catch {  }
   await sw.registration.showNotification(n?.title || 'SvRvS Rythm', { body: n?.body || 'Yangi musiqalar sizni kutmoqda', icon: '/icon-512.png', badge: '/icon-512.png', tag: 'rythm', data: { url: n?.url || '/' } });
 })()));
 sw.addEventListener('notificationclick', e => {

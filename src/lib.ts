@@ -1,7 +1,5 @@
-// Pure helpers, no Worker bindings, so `node --test` can exercise them directly.
 const ascii = (b: Uint8Array, o: number, n: number): string => String.fromCharCode(...b.subarray(o, o + n));
 
-// Only uncompressed PCM/float WAV passes: format tags like 0x55 (MP3 inside RIFF) must not.
 export interface WavInfo { channels: number; sampleRate: number; bitDepth: number; duration: number; dataSize: number; dataOffset: number; format: number }
 
 export function parseWav(bytes: Uint8Array, totalSize?: number): WavInfo {
@@ -60,7 +58,6 @@ export async function hmac(secret: string, msg: string): Promise<string> {
   return hex(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(msg)));
 }
 
-// Workers caps PBKDF2 at 100k iterations.
 export async function hashPassword(password: string, saltHex?: string): Promise<{ hash: string; salt: string }> {
   const salt = saltHex || hex(crypto.getRandomValues(new Uint8Array(16)));
   const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);

@@ -1,4 +1,3 @@
-// JavaScript, test/load.ts, node: small real load run. Usage: node test/load.ts <base> [requests] [concurrency]
 const [B, N = '3000', C = '60'] = process.argv.slice(2);
 const em = `load${Date.now()}@test.uz`;
 const r = await fetch(B + '/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'L', email: em, password: 'parol12345' }) });

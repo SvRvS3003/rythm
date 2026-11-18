@@ -1,4 +1,3 @@
-// JavaScript, test/upload.ts, node + playwright: adds a song through the real admin form. Usage: node test/upload.ts <base> [outDir]
 import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit } from 'playwright';
 import assert from 'node:assert/strict';
@@ -9,7 +8,7 @@ import { join } from 'node:path';
 const BASE = process.argv[2], OUT = process.argv[3] || mkdtempSync(join(tmpdir(), 'up-'));
 const v = readFileSync('.prod.vars', 'utf8'), login = process.env.LOGIN || v.match(/ADMIN_LOGIN=(.*)/)[1].trim(), pass = process.env.PASS || v.match(/ADMIN_PASSWORD=(.*)/)[1].trim();
 const ff = (n, a) => { const f = join(OUT, n); execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...a, f]); return f; };
-// A small song, not a steady tone: chords, a kick and hats, so the sound check has something real to hear.
+
 const wav = ff('Forma Sinovi.wav', ['-f', 'lavfi', '-i', `aevalsrc='0.2*sin(2*PI*(220+55*mod(floor(t/2)\\,4))*t)+0.5*exp(-18*mod(t\\,0.5))*sin(2*PI*60*t)+0.15*random(0)*exp(-50*mod(t+0.25\\,0.5))':s=48000:d=130`, '-af', 'aformat=channel_layouts=stereo', '-c:a', 'pcm_s24le']);
 const mp3 = ff('Yomon.mp3', ['-f', 'lavfi', '-i', 'sine=440:duration=2']);
 const fake = ff('niqob.wav', ['-f', 'lavfi', '-i', 'sine=440:duration=2', '-c:a', 'libmp3lame']);
@@ -26,9 +25,10 @@ await p.screenshot({ path: join(OUT, 'admin.png') });
 await p.getByRole('link', { name: "+ Musiqa qo'shish" }).first().click();
 await p.waitForSelector('input[type=file][multiple]');
 await p.screenshot({ path: join(OUT, 'form.png') });
-const send = async file => {
+const send = async (file, name = '') => {
   await p.locator('input[type=file][multiple]').setInputFiles(file);
   await p.getByLabel('Ijrochi').fill('Forma Ijrochi');
+  if (name) { await p.locator('.preview .verdict.ok, .preview .verdict.similar').waitFor({ timeout: 30000 }); await p.getByRole('textbox', { name: "Qo'shiq nomi" }).fill(name); }
   await p.getByRole('button', { name: 'Yuklash', exact: true }).click();
 };
 await send(mp3);
@@ -43,16 +43,38 @@ const canPreview = await p.evaluate(async () => { const a = document.querySelect
 assert.ok(canPreview.blob && canPreview.duration === 130 && canPreview.paused, `preview: ${JSON.stringify(canPreview)}`);
 console.log('  ok a chosen song can be heard before upload, and does not start by itself');
 await p.locator('.preview .verdict.ok, .preview .verdict.similar').waitFor({ timeout: 30000 });
-await send(wav);
+assert.equal(await p.getByLabel('Ijrochi').inputValue(), 'SvRvS'); assert.equal(await p.getByLabel('Albom').inputValue(), 'SvRvS rythm');
+const autoName = p.getByRole('textbox', { name: "Qo'shiq nomi" }), autoGenre = p.getByRole('textbox', { name: 'Janr' });
+const name0 = await autoName.inputValue(), genre0 = await autoGenre.inputValue();
+assert.ok(name0 && name0 !== 'Forma Sinovi', 'a name is offered, not the file name'); assert.ok(genre0, 'a genre is offered');
+console.log(`  ok the form names the song "${name0}", genre "${genre0}", artist and album preset`);
+await autoName.fill('sam'); await p.locator('.name-chips .pill', { hasText: 'Samarkand' }).click();
+assert.equal(await autoName.inputValue(), 'Samarkand'); console.log('  ok letters offer names, a tap takes one');
+await p.getByLabel('Ijrochi').fill('Forma Ijrochi'); assert.equal(await p.getByLabel('Ijrochi').inputValue(), 'Forma Ijrochi'); console.log('  ok artist can be changed');
+await send(wav, 'Forma Sinovi');
 await p.waitForURL(u => u.pathname === '/', { timeout: 240000 });
 await p.locator('.card.spotlight', { hasText: 'Forma Sinovi' }).waitFor({ timeout: 8000 });
 console.log('  ok after upload the home page opens and spotlights the new song');
-// Same sound under a new name and quieter: found, and nothing is uploaded when declined.
+
 const copy = join(OUT, 'Boshqa Nom.wav');
 execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', wav, '-af', 'volume=-8dB', '-c:a', 'pcm_s16le', '-ar', '44100', copy]);
 const count = () => p.evaluate(async () => (await (await fetch('/api/admin/tracks')).json()).tracks.length);
 const before = await count();
 await p.goto(`${BASE}/admin/upload`); await p.waitForSelector('input[type=file][multiple]');
+await p.locator('input[type=file][multiple]').setInputFiles(copy);
+const twin = p.locator('.preview .match-preview audio');
+await twin.waitFor({ timeout: 30000 });
+const heard = await p.evaluate(async () => {
+  const box = document.querySelector('.preview')!, a = box.querySelector<HTMLAudioElement>('.match-preview audio')!;
+  if (a.readyState < 1) await new Promise(ok => { a.addEventListener('loadedmetadata', ok, { once: true }); a.addEventListener('error', ok, { once: true }); });
+  const order = [...box.children].map(e => e.matches('audio') ? 'new' : e.matches('.verdict') ? 'verdict' : e.matches('.match-preview') ? 'match' : '').filter(Boolean);
+  return { order, duration: Math.round(a.duration), text: box.querySelector('.match-preview')!.textContent, paused: a.paused, src: a.src };
+});
+assert.deepEqual(heard.order, ['new', 'verdict', 'match'], 'new song, then the words, then the song it resembles');
+assert.equal(heard.duration, 130); assert.match(String(heard.text), /Forma Sinovi/); assert.ok(heard.paused, 'it must not start by itself'); assert.match(heard.src, /\/media\/stream\//);
+const onlyOne = await p.evaluate(async () => { const [x, y] = document.querySelectorAll<HTMLAudioElement>('.preview audio'); await x.play(); await y.play(); await new Promise(ok => setTimeout(ok, 200)); const r = { x: x.paused, y: y.paused }; y.pause(); return r; });
+assert.deepEqual(onlyOne, { x: true, y: false }, 'one sound at a time');
+console.log('  ok the resembling song plays under the words, one sound at a time');
 await send(copy);
 await p.getByRole('heading', { name: "Bu qo'shiq allaqachon bor" }).waitFor({ timeout: 30000 }).catch(async e => { console.log('verdict:', await p.locator('.verdict').allTextContents(), await p.locator('.stack .small, .err').allTextContents()); throw e; });
 await p.screenshot({ path: join(OUT, 'duplicate.png') });
@@ -61,7 +83,7 @@ await p.getByText(/yuklanmadi/).waitFor({ timeout: 8000 });
 assert.equal(await count(), before, 'declined copy must not be uploaded');
 console.log('  ok a renamed, quieter copy is found and not uploaded');
 await p.screenshot({ path: join(OUT, 'done.png') });
-// Listed, playable, stored size matches, then removed.
+
 const out = await p.evaluate(async () => {
   const { tracks } = await (await fetch('/api/admin/tracks')).json();
   const t = tracks.find(x => x.title === 'Forma Sinovi');

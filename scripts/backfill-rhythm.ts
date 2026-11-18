@@ -1,5 +1,3 @@
-// TypeScript, scripts/backfill-rhythm.ts, node 24: prepares beat maps for songs uploaded before they existed. Reads the WAV, never rewrites it.
-// Usage: node scripts/backfill-rhythm.ts <baseUrl>
 import { readFileSync } from 'node:fs';
 import { analyzeFull } from '../client/rhythm.ts';
 import { makeFingerprint } from '../client/fingerprint.ts';

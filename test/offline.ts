@@ -1,4 +1,3 @@
-// TypeScript, test/offline.ts, node + playwright: a song saved, encrypted, played with no network, locked when the plan lapses. Usage: node test/offline.ts [webkit|chromium]
 import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import assert from 'node:assert/strict';
@@ -35,18 +34,18 @@ try {
   const uid = (await J(p, '/api/me', undefined, 'GET')).user.id;
   await J(ap, `/api/admin/users/${uid}`, { grantPlanId: 'duet' }, 'PATCH');
   await J(ap, '/api/admin/settings', { ad_every: 0 }, 'PATCH');
-  await p.waitForTimeout(32000); // past the listeners' 30 s catalogue cache
+  await p.waitForTimeout(32000);
   await p.goto(BASE + '/search'); await p.waitForSelector('.list .tr'); await p.waitForTimeout(800);
-  await p.reload(); await p.waitForSelector('.list .tr'); // the worker now controls the page
+  await p.reload(); await p.waitForSelector('.list .tr');
   await p.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 15000 });
   await p.locator(`.tr[data-id="${id}"] button[aria-label="Pleylistga qo'shish"]`).first().click();
   await p.getByRole('button', { name: 'Oflayn saqlash' }).click();
-  // Polled from here: waitForFunction would treat the promise of an async check as already true.
+
   const isDone = () => p.evaluate(async i => { const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); }); const s: any = await new Promise(r => { const g = d.transaction('songs').objectStore('songs').get(i); g.onsuccess = () => r(g.result); }); return s?.done === true; }, id).catch(() => false);
   for (let n = 0; n < 180 && !(await isDone()); n++) await p.waitForTimeout(500);
   assert.equal(await isDone(), true, 'download did not finish');
   console.log('  ok saved through the + menu');
-  // Nothing readable on the device: encrypted chunks, no WAV header, a key that cannot be exported.
+
   const inside = await p.evaluate(async i => {
     const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); });
     const get = (s: string, k: any): Promise<any> => new Promise(r => { const g = d.transaction(s).objectStore(s).get(k); g.onsuccess = () => r(g.result); });
@@ -55,7 +54,7 @@ try {
     const first = await get('chunks', [i, 0]), key = await get('meta', 'key');
     if (!first) throw new Error(`no chunk 0: ${JSON.stringify({ keys: dbg.slice(0, 3), n: dbg.length, song: song && { size: song.size, have: song.have, done: song.done } })}`);
     const head = new TextDecoder('latin1').decode(new Uint8Array(first.data).slice(0, 4));
-    let exported = false; try { await crypto.subtle.exportKey('raw', key); exported = true; } catch { /* expected */ }
+    let exported = false; try { await crypto.subtle.exportKey('raw', key); exported = true; } catch {  }
     const names = await caches.keys(); let plain = false;
     for (const n of names) for (const r of await (await caches.open(n)).keys()) if (r.url.includes(i)) plain = true;
     return { head, extractable: key.extractable, exported, plain };
@@ -63,7 +62,7 @@ try {
   assert.notEqual(inside.head, 'RIFF', 'stored chunk must not be plain WAV');
   assert.equal(inside.extractable, false); assert.equal(inside.exported, false); assert.equal(inside.plain, false);
   console.log('  ok stored encrypted, key cannot be exported, no plain copy in caches');
-  // No network at all.
+
   await ctx.setOffline(true);
   await p.goto(BASE + '/'); await p.waitForURL(/\/offline$/, { timeout: 15000 }); await p.waitForSelector('.offline-list .tr');
   const sha = await p.evaluate(async i => { const b = await (await fetch(`/off/${i}`)).arrayBuffer(); return [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].map(x => x.toString(16).padStart(2, '0')).join(''); }, id);
@@ -76,7 +75,7 @@ try {
   await p.evaluate(() => (window as any).__a.pause());
   console.log('  ok played with no network, byte-identical, seeking works');
   await ctx.setOffline(false);
-  // Plan lapses: locked, nothing re-downloaded when it comes back.
+
   await J(ap, `/api/admin/users/${uid}`, { revokePlan: true }, 'PATCH');
   await p.goto(BASE + '/offline'); await p.getByText('Oflayn yopiq').waitFor({ timeout: 15000 });
   assert.equal(await p.evaluate(async i => (await fetch(`/off/${i}`)).status, id), 403);
@@ -88,7 +87,7 @@ try {
   assert.equal(await p.evaluate(async i => (await fetch(`/off/${i}`, { headers: { range: 'bytes=0-3' } })).status, id), 206);
   assert.equal(downloads, 0, 'paying must reopen without downloading again');
   console.log('  ok paying reopens it at once, no new download');
-  // Sign out removes everything from the device.
+
   await p.goto(BASE + '/account'); await p.getByRole('button', { name: 'Chiqish' }).click(); await p.getByRole('button', { name: 'Kirish', exact: true }).waitFor();
   await p.waitForTimeout(800);
   const gone = await p.evaluate(async i => { const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); }); return new Promise(r => { const g = d.transaction('chunks').objectStore('chunks').get([i, 0]); g.onsuccess = () => r(g.result === undefined); }); }, id);

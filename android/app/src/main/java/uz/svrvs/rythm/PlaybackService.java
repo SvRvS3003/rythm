@@ -1,4 +1,3 @@
-// Java, PlaybackService.java, Android 8+: foreground service and media controls that keep WebView audio alive.
 package uz.svrvs.rythm;
 
 import android.app.Notification;
@@ -58,7 +57,7 @@ public class PlaybackService extends Service {
             if (c != null && !c.equals(coverUrl)) { coverUrl = c; art = null; loadArt(c); }
         }
         post();
-        // Locks follow the audio so a paused player cannot drain the battery.
+
         if (playing) { wake.acquire(4 * 3600 * 1000L); wifi.acquire(); }
         else { if (wake.isHeld()) wake.release(); if (wifi.isHeld()) wifi.release(); }
         return START_NOT_STICKY;
@@ -85,7 +84,7 @@ public class PlaybackService extends Service {
             .addAction(playing ? action(android.R.drawable.ic_media_pause, "Pauza", "pause") : action(android.R.drawable.ic_media_play, "Ijro", "play"))
             .addAction(action(android.R.drawable.ic_media_next, "Keyingi", "next"))
             .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()).setShowActionsInCompactView(0, 1, 2)).build();
-        // Stays foreground across pauses and track changes: re-entering foreground from the background is forbidden on Android 12+.
+
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             else startForeground(7, n);

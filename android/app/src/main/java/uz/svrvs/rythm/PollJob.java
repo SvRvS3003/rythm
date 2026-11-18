@@ -1,4 +1,3 @@
-// Java, PollJob.java, Android 8+: asks the server for new messages about every 15 minutes, since WebView has no browser push.
 package uz.svrvs.rythm;
 
 import android.app.Notification;

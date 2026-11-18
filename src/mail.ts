@@ -1,4 +1,3 @@
-// TypeScript, src/mail.ts, Workers and node: the SMTP conversation, kept free of sockets so a test can play the server.
 export interface Mail { user: string; pass: string; to: string; fromName: string; subject: string; text: string; html: string }
 
 export function buildMessage(m: Mail, boundary: string): string {
@@ -18,7 +17,7 @@ export async function smtpSend(readable: ReadableStream<Uint8Array>, writable: W
   const reader = readable.getReader(), writer = writable.getWriter();
   const enc = new TextEncoder(), dec = new TextDecoder();
   let buf = '';
-  // A reply may span lines ("250-..."); only "250 ..." ends it.
+
   const reply = async (want: number): Promise<void> => {
     for (;;) {
       const lines = buf.split('\r\n');

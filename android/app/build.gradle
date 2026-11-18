@@ -11,7 +11,7 @@ android {
     defaultConfig {
         applicationId 'uz.svrvs.rythm'
         minSdk 26
-        targetSdk 34 // 35 forces edge-to-edge, which WebView safe-area insets do not report reliably.
+        targetSdk 34
         versionCode((findProperty('versionCode') ?: '1') as int)
         versionName((findProperty('versionName') ?: '1.0.0').toString())
         buildConfigField 'String', 'BASE_URL', "\"${baseUrl}\""

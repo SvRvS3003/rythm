@@ -1,15 +1,16 @@
-// Java, MainActivity.java, Android 8+: hosts the web app and exposes the small native bridge.
 package uz.svrvs.rythm;
 
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -23,7 +24,8 @@ import java.lang.ref.WeakReference;
 
 public class MainActivity extends Activity {
     private static WeakReference<MainActivity> current = new WeakReference<>(null);
-    private static final int PICK_FILE = 41;
+    private static final int PICK_FILE = 41, MIC = 42;
+    private PermissionRequest pendingMic;
     private WebView web;
     private ValueCallback<Uri[]> pendingFiles;
 
@@ -40,14 +42,14 @@ public class MainActivity extends Activity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setAllowFileAccess(false);
         s.setUserAgentString(s.getUserAgentString() + " SvRvSRythmApp/" + BuildConfig.VERSION_NAME);
-        // Keeps the renderer, and so the audio element and its queue logic, alive off-screen.
+
         web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         CookieManager.getInstance().setAcceptCookie(true);
         web.addJavascriptInterface(new Bridge(), "RythmNative");
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 Uri base = Uri.parse(BuildConfig.BASE_URL), u = r.getUrl();
-                // The bridge must only ever face our own origin; everything else goes to the browser.
+
                 if (base.getAuthority().equals(u.getAuthority())) return false;
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
                 return true;
@@ -59,6 +61,19 @@ public class MainActivity extends Activity {
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
+
+            @Override public void onPermissionRequest(PermissionRequest r) {
+                runOnUiThread(() -> {
+                    Uri base = Uri.parse(BuildConfig.BASE_URL);
+                    boolean ours = base.getAuthority().equals(r.getOrigin().getAuthority());
+                    if (!ours || r.getResources().length != 1 || !PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r.getResources()[0])) { r.deny(); return; }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) { r.grant(r.getResources()); return; }
+                    if (pendingMic != null) pendingMic.deny();
+                    pendingMic = r;
+                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MIC);
+                });
+            }
+            @Override public void onPermissionRequestCanceled(PermissionRequest r) { if (r == pendingMic) pendingMic = null; }
             @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
                 if (pendingFiles != null) pendingFiles.onReceiveValue(null);
                 pendingFiles = cb;
@@ -68,7 +83,7 @@ public class MainActivity extends Activity {
         });
         web.setDownloadListener((url, ua, cd, mime, len) -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))));
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
-        // News is optional; a problem with it must never stop the music app from opening.
+
         try { PollJob.schedule(this); } catch (RuntimeException e) { android.util.Log.w("rythm", e); }
         if (state != null) web.restoreState(state);
         else web.loadUrl(BuildConfig.BASE_URL + "/");
@@ -80,8 +95,15 @@ public class MainActivity extends Activity {
             pendingFiles = null;
         }
     }
+    @Override public void onRequestPermissionsResult(int code, String[] names, int[] results) {
+        super.onRequestPermissionsResult(code, names, results);
+        if (code != MIC || pendingMic == null) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) pendingMic.grant(pendingMic.getResources());
+        else pendingMic.deny();
+        pendingMic = null;
+    }
     @Override protected void onSaveInstanceState(Bundle out) { super.onSaveInstanceState(out); web.saveState(out); }
-    // web.onPause()/pauseTimers() are deliberately not called: they would stop background playback.
+
     @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); }
     @Override public void onBackPressed() { if (web.canGoBack()) web.goBack(); else moveTaskToBack(true); }
     @Override protected void onDestroy() {

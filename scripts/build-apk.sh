@@ -1,11 +1,11 @@
 #!/bin/zsh
-# Bash, scripts/build-apk.sh, macOS: builds a signed APK. Usage: scripts/build-apk.sh <baseUrl> <versionCode> <versionName>
+
 set -e
 cd "$(dirname "$0")/../android"
 BASE=${1:?baseUrl}; CODE=${2:?versionCode}; NAME=${3:?versionName}
 export JAVA_HOME="$HOME/.local/jdk21/Contents/Home" ANDROID_HOME="$HOME/Library/Android/sdk"
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-# This key signs every future update. Losing it means users must reinstall by hand.
+
 if [ ! -f release.keystore ]; then
   PW=$(openssl rand -hex 24)
   "$JAVA_HOME/bin/keytool" -genkeypair -keystore release.keystore -alias rythm -keyalg RSA -keysize 4096 -validity 36500 -storepass "$PW" -keypass "$PW" -dname "CN=SvRvS Rythm" >/dev/null 2>&1

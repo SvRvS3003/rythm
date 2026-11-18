@@ -1,11 +1,10 @@
-// TypeScript, src/index.ts, Cloudflare Workers runtime: API, R2 streaming, admin.
 import { connect } from 'cloudflare:sockets';
 import { smtpSend } from './mail.ts';
 import { vapidHeader, vapidPublicKey } from './push.ts';
 import { parseWav, parseRange, imageType, isApk, hex, sha256, hmac, hashPassword, safeEqual, xmlEscape } from './lib.ts';
 
 export interface Env { DB: D1Database; BUCKET: R2Bucket; ASSETS: Fetcher; ADMIN_LOGIN: string; ADMIN_PASSWORD: string; SIGNING_SECRET: string; VAPID_JWK?: string; EMAIL?: { send(m: { to: string; from: { email: string; name: string }; subject: string; text: string; html: string }): Promise<unknown> } }
-// SQL rows are shaped by the query text beside each call, so they stay loosely typed.
+
 type Row = Record<string, any>;
 type Guard = 'user' | 'admin' | null;
 interface Ctx { params: Record<string, string>; user: Row }
@@ -14,7 +13,7 @@ type Handler = (req: Request, env: Env, ctx: Ctx) => Promise<Response> | Respons
 const now = () => Math.floor(Date.now() / 1000);
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 const DAY = 86400;
-const PART_SIZE = 20 * 1024 * 1024; // Worker request limit is 100 MB; big WAVs go through R2 multipart.
+const PART_SIZE = 20 * 1024 * 1024;
 
 class HttpError extends Error {
   status: number;
@@ -25,7 +24,7 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
 
 const all = async (env: Env, sql: string, ...a: unknown[]): Promise<Row[]> => (await env.DB.prepare(sql).bind(...a).all<Row>()).results;
 const first = (env: Env, sql: string, ...a: unknown[]): Promise<Row | null> => env.DB.prepare(sql).bind(...a).first<Row>();
-// For aggregates and rows already known to exist.
+
 const one = (env: Env, sql: string, ...a: unknown[]): Promise<Row> => env.DB.prepare(sql).bind(...a).first<Row>() as Promise<Row>;
 const run = (env: Env, sql: string, ...a: unknown[]) => env.DB.prepare(sql).bind(...a).run();
 const st = (env: Env, sql: string, ...a: unknown[]) => env.DB.prepare(sql).bind(...a);
@@ -38,7 +37,6 @@ const int = (v: unknown, min: number, max: number, name = 'Qiymat'): number => {
 };
 const media = (key: string | null | undefined): string | null => (key ? `/media/${key}` : null);
 
-// ---------- routing ----------
 const routes: { method: string; path: string; re: RegExp; names: string[]; handler: Handler; guard: Guard }[] = [];
 const route = (method: string, path: string, handler: Handler, guard: Guard = 'user') => {
   const names: string[] = [];
@@ -50,7 +48,6 @@ async function body(req: Request): Promise<any> {
   try { return await req.json(); } catch { fail(400, "So'rov noto'g'ri"); }
 }
 
-// ---------- auth ----------
 const cookieName = 'rythm_session';
 function sessionCookie(req: Request, token: string, maxAge: number): string {
   const secure = new URL(req.url).protocol === 'https:' ? ' Secure;' : '';
@@ -61,15 +58,25 @@ async function startSession(env: Env, req: Request, userId: string): Promise<str
   await run(env, 'INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)', await sha256(token), userId, now() + 60 * DAY);
   return sessionCookie(req, token, 60 * DAY);
 }
-// Scripts send "Authorization: Bearer rk_...". A key acts as the admin; only its hash is stored.
+
 async function apiKeyUser(env: Env, token: string): Promise<Row | null> {
   const key = await first(env, 'SELECT id,last_used FROM api_keys WHERE key_hash=?', await sha256(token));
   if (!key) return fail(401, 'API kalit noto\'g\'ri');
   if (now() - key.last_used > 300) await run(env, 'UPDATE api_keys SET last_used=? WHERE id=?', now(), key.id);
   return first(env, "SELECT * FROM users WHERE role='admin' AND banned=0 LIMIT 1");
 }
+
+async function tokenUser(env: Env, token: string): Promise<Row> {
+  const u = await first(env, 'SELECT u.*,k.id token_id,k.scope token_scope,k.last_used token_used FROM user_tokens k JOIN users u ON u.id=k.user_id WHERE k.key_hash=? AND u.banned=0', await sha256(token));
+  if (!u) return fail(401, 'API kalit noto\'g\'ri yoki uzilgan');
+  if (now() - u.token_used > 300) await run(env, 'UPDATE user_tokens SET last_used=? WHERE id=?', now(), u.token_id);
+  return { ...u, role: 'user', via_token: true };
+}
 async function currentUser(env: Env, req: Request): Promise<Row | null> {
-  const bearer = /^Bearer (rk_[0-9a-f]{64})$/.exec(req.headers.get('authorization') || '');
+  const auth = req.headers.get('authorization') || '';
+  const own = /^Bearer (ut_[0-9a-f]{64})$/.exec(auth);
+  if (own) return tokenUser(env, own[1]);
+  const bearer = /^Bearer (rk_[0-9a-f]{64})$/.exec(auth);
   if (bearer) return apiKeyUser(env, bearer[1]);
   const m = new RegExp(`${cookieName}=([0-9a-f]{64})`).exec(req.headers.get('cookie') || '');
   if (!m) return null;
@@ -82,7 +89,6 @@ async function limited(env: Env, key: string, max: number, windowSec: number): P
 const note = (env: Env, key: string) => run(env, 'INSERT INTO attempts (k,at) VALUES (?,?)', key, now());
 const ip = (req: Request): string => req.headers.get('cf-connecting-ip') || 'local';
 
-// Per-isolate read cache: hot, rarely changing reads stop reaching the single D1 primary.
 const memoStore = new Map<string, { val: any; exp: number }>();
 async function memo<T>(key: string, ttlSec: number, fn: () => Promise<T>): Promise<T> {
   const hit = memoStore.get(key);
@@ -99,11 +105,11 @@ async function settings(env: Env): Promise<Record<string, string>> {
   return out;
 }
 
-// Plan off, exempt list and admins all mean: no ads, no paywall.
-type Entitlement = { premium: boolean; reason: string; planId?: string; expires?: number };
+type Entitlement = { premium: boolean; reason: string; planId?: string; planName?: string; expires?: number };
 async function entitlement(env: Env, u: Row, s: Record<string, string>): Promise<Entitlement> {
+
+  if (u.role === 'admin') return { premium: true, reason: 'admin', planName: (await first(env, 'SELECT name FROM plans WHERE active=1 ORDER BY price_uzs DESC LIMIT 1'))?.name };
   if (s.plans_enabled !== '1') return { premium: true, reason: 'plans_off' };
-  if (u.role === 'admin') return { premium: true, reason: 'admin' };
   if (u.plan_exempt) return { premium: true, reason: 'exempt' };
   if (u.plan_expires > now()) return { premium: true, reason: 'plan', planId: u.plan_id, expires: u.plan_expires };
   if (u.family_owner_id) {
@@ -115,7 +121,6 @@ async function entitlement(env: Env, u: Row, s: Record<string, string>): Promise
 const publicUser = (u: Row, e: Entitlement) => ({ id: u.id, name: u.name, email: u.email, role: u.role, entitlement: e, seenTrackAt: u.seen_track_at });
 const publicSettings = (s: Record<string, string>) => ({ siteName: s.site_name, heroTitle: s.hero_title, heroSub: s.hero_sub, plansEnabled: s.plans_enabled === '1', supportUrl: s.support_url });
 
-// Gmail works today with no domain; Cloudflare Email takes over by clearing the Gmail fields once a domain is onboarded.
 const mailReady = (env: Env, s: Record<string, string>): boolean => !!((s.smtp_user && s.smtp_pass) || (s.email_from && env.EMAIL));
 async function sendMail(env: Env, s: Record<string, string>, to: string, subject: string, text: string, html: string): Promise<void> {
   if (!(s.smtp_user && s.smtp_pass)) { await env.EMAIL!.send({ to, from: { email: s.email_from, name: s.site_name }, subject, text, html }); return; }
@@ -137,7 +142,7 @@ route('POST', '/api/auth/register', async (req, env) => {
   if (await first(env, 'SELECT id FROM users WHERE email=?', email)) fail(409, "Bu email allaqachon ro'yxatdan o'tgan");
   const { hash, salt } = await hashPassword(password);
   const s = await settings(env);
-  // The sender lives in settings, so moving to a new domain needs no code change. Empty means codes are off.
+
   if (mailReady(env, s)) {
     const prev = await first(env, 'SELECT sent_at FROM signups WHERE email=?', email);
     if (prev && now() - prev.sent_at < 60) fail(429, 'Kod yuborilgan. Bir daqiqadan keyin qayta urinib ko\'ring.');
@@ -185,7 +190,7 @@ route('POST', '/api/auth/login', async (req, env) => {
   const email = str(b.email, 120).toLowerCase(), password = String(b.password ?? '');
   const key = `login:${ip(req)}:${email}`;
   await limited(env, key, 10, 900);
-  // Admin credentials live in Worker secrets, so rotating the secret rotates the login.
+
   if (env.ADMIN_LOGIN && email === env.ADMIN_LOGIN.toLowerCase()) {
     if (!env.ADMIN_PASSWORD || !safeEqual(await sha256(password), await sha256(env.ADMIN_PASSWORD))) { await note(env, key); fail(401, "Login yoki parol noto'g'ri"); }
     await run(env, "INSERT INTO users (id,email,name,pass_hash,pass_salt,role,created_at) VALUES ('admin',?,'Admin','','','admin',?) ON CONFLICT(id) DO UPDATE SET email=excluded.email", email, now());
@@ -212,7 +217,6 @@ route('GET', '/api/me', async (req, env) => {
   return json({ user: publicUser(u, await entitlement(env, u, s)), settings: publicSettings(s) });
 }, null);
 
-// Remembered per account, so a new-song announcement plays once per person across all their devices.
 route('POST', '/api/me/seen', async (req, env, { user }) => {
   await run(env, 'UPDATE users SET seen_track_at=MAX(seen_track_at,?) WHERE id=?', int((await body(req)).at, 0, now(), 'Vaqt'), user.id);
   return json({ ok: true });
@@ -226,7 +230,98 @@ route('PATCH', '/api/me', async (req, env, { user }) => {
   return json({ ok: true });
 });
 
-// ---------- catalogue ----------
+const TOKEN_ROUTES = new Map<string, 'read' | 'write'>([
+  ...['GET /api/me', 'GET /api/me/api', 'GET /api/home', 'GET /api/catalog', 'GET /api/catalog/stamp', 'GET /api/search', 'GET /api/genres/:name', 'GET /api/tracks/:id', 'GET /api/artists/:id', 'GET /api/albums/:id',
+    'GET /api/likes', 'GET /api/library', 'GET /api/playlists/:id', 'POST /api/play', 'POST /api/plays/:id/counted', 'POST /api/ads/:view/complete'].map(k => [k, 'read'] as const),
+  ...['PATCH /api/me', 'PUT /api/likes/:id', 'DELETE /api/likes/:id', 'POST /api/playlists', 'PATCH /api/playlists/:id', 'DELETE /api/playlists/:id', 'POST /api/playlists/:id/tracks', 'DELETE /api/playlists/:id/tracks/:track'].map(k => [k, 'write'] as const),
+]);
+const MAX_TOKENS = 20;
+
+const sessionOnly = (req: Request): void => { if (req.headers.has('authorization')) fail(403, 'Bu amal faqat saytdagi akkaunt sozlamalaridan bajariladi'); };
+const newToken = () => `ut_${hex(crypto.getRandomValues(new Uint8Array(32)))}`;
+async function issueToken(env: Env, userId: string, name: string, kind: 'key' | 'app', scope: string): Promise<string> {
+  const n = await one(env, 'SELECT COUNT(*) c FROM user_tokens WHERE user_id=?', userId);
+  if (n!.c >= MAX_TOKENS) fail(409, `Ko'pi bilan ${MAX_TOKENS} ta kalit yoki ulangan ilova. Keraksizini uzing.`);
+  const token = newToken();
+  await run(env, 'INSERT INTO user_tokens (id,user_id,name,kind,scope,key_hash,hint,created_at) VALUES (?,?,?,?,?,?,?,?)', uid(), userId, name, kind, scope, await sha256(token), token.slice(-6), now());
+  return token;
+}
+const scopeOf = (v: unknown): string => {
+  const parts = new Set(String(v ?? 'read').split(/[\s,+]+/).filter(Boolean));
+  if ([...parts].some(p => p !== 'read' && p !== 'write')) fail(400, 'Ruxsat turi noto\'g\'ri: faqat read va write');
+  return parts.has('write') ? 'read write' : 'read';
+};
+route('GET', '/api/me/tokens', async (req, env, { user }) => {
+  sessionOnly(req);
+  return json({ tokens: await all(env, 'SELECT id,name,kind,scope,hint,created_at,last_used FROM user_tokens WHERE user_id=? ORDER BY created_at DESC', user.id) });
+});
+route('POST', '/api/me/tokens', async (req, env, { user }) => {
+  sessionOnly(req);
+  const b = await body(req);
+  const name = str(b.name, 60);
+  if (!name) return fail(400, 'Kalit nomini kiriting');
+  await limited(env, `tok:${user.id}`, 20, 3600);
+  await note(env, `tok:${user.id}`);
+  return json({ key: await issueToken(env, user.id, name, 'key', b.write ? 'read write' : 'read') }, 201);
+});
+route('DELETE', '/api/me/tokens/:id', async (req, env, { user, params }) => {
+  sessionOnly(req);
+  const r = await run(env, 'DELETE FROM user_tokens WHERE id=? AND user_id=?', params.id, user.id);
+  if (!r.meta.changes) fail(404, 'Kalit topilmadi');
+  return json({ ok: true });
+});
+
+route('GET', '/api/me/api', async (req) => {
+  const o = new URL(req.url).origin;
+  return json({
+    auth: 'Authorization: Bearer ut_...',
+    endpoints: [...TOKEN_ROUTES].map(([k, scope]) => { const [method, path] = k.split(' '); return { method, path, scope }; }),
+    oauth: { authorize: `${o}/connect`, token: `${o}/api/oauth/token`, pkce: 'S256', scopes: ['read', 'write'] },
+  });
+});
+
+function redirectTo(raw: unknown): URL {
+  let u: URL;
+  try { u = new URL(String(raw ?? '')); } catch { return fail(400, 'Qaytish manzili noto\'g\'ri'); }
+  const loopback = u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  if (!(u.protocol === 'https:' || loopback) || u.username || u.password || u.hash) fail(400, 'Qaytish manzili https bo\'lishi kerak');
+  return u;
+}
+const b64url = (b: ArrayBuffer): string => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+route('POST', '/api/oauth/approve', async (req, env, { user }) => {
+  sessionOnly(req);
+  const b = await body(req);
+  const client = str(b.client_name, 60), redirect = redirectTo(b.redirect_uri), state = str(b.state, 500);
+  if (!client) fail(400, 'Ilova nomi berilmagan');
+  if (b.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43,128}$/.test(String(b.code_challenge ?? ''))) fail(400, 'PKCE (S256) talab qilinadi');
+  const scope = scopeOf(b.scope);
+  const back = (q: Record<string, string>): string => { const u = new URL(redirect); for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v); if (state) u.searchParams.set('state', state); return u.toString(); };
+  if (b.check) return json({ client, host: redirect.host, scope, account: user.email });
+  if (b.deny) return json({ redirect: back({ error: 'access_denied' }) });
+  await limited(env, `oauth:${user.id}`, 30, 3600);
+  await note(env, `oauth:${user.id}`);
+  const code = hex(crypto.getRandomValues(new Uint8Array(32)));
+  await run(env, 'INSERT INTO oauth_codes (code_hash,user_id,client,redirect_uri,challenge,scope,expires) VALUES (?,?,?,?,?,?,?)', await sha256(code), user.id, client, redirect.toString(), b.code_challenge, scope, now() + 600);
+  return json({ redirect: back({ code }) });
+});
+
+route('POST', '/api/oauth/token', async (req, env) => {
+  await limited(env, `otok:${ip(req)}`, 60, 3600);
+  await note(env, `otok:${ip(req)}`);
+  const form = (req.headers.get('content-type') || '').includes('application/x-www-form-urlencoded');
+  const b: Record<string, unknown> = form ? Object.fromEntries(new URLSearchParams(await req.text())) : await body(req);
+  const bad = (error: string, error_description: string) => json({ error, error_description }, 400);
+  if (b.grant_type !== 'authorization_code') return bad('unsupported_grant_type', 'Faqat authorization_code');
+  const verifier = String(b.code_verifier ?? '');
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return bad('invalid_request', 'code_verifier noto\'g\'ri');
+  const c = await first(env, 'DELETE FROM oauth_codes WHERE code_hash=? RETURNING *', await sha256(String(b.code ?? '')));
+  if (!c || c.expires < now()) return bad('invalid_grant', 'Kod eskirgan yoki ishlatilgan');
+  if (String(b.redirect_uri ?? '') !== c.redirect_uri && redirectTo(b.redirect_uri).toString() !== c.redirect_uri) return bad('invalid_grant', 'Qaytish manzili mos emas');
+  if (!safeEqual(b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))), c.challenge)) return bad('invalid_grant', 'PKCE tekshiruvidan o\'tmadi');
+  if (!await first(env, 'SELECT id FROM users WHERE id=? AND banned=0', c.user_id)) return bad('invalid_grant', 'Akkaunt faol emas');
+  return json({ access_token: await issueToken(env, c.user_id, c.client, 'app', c.scope), token_type: 'Bearer', scope: c.scope }, 200, { 'cache-control': 'no-store' });
+}, null);
+
 const TRACK_SQL = `SELECT t.id,t.title,t.artist_id,a.name artist,t.album_id,al.title album,t.genre,t.duration,t.sample_rate,t.bit_depth,t.channels,t.play_count,t.promoted,t.promo_text,t.published,t.created_at,t.rhythm_key,COALESCE(t.cover_key,al.cover_key,a.image_key) cover_key
   FROM tracks t JOIN artists a ON a.id=t.artist_id LEFT JOIN albums al ON al.id=t.album_id`;
 const mapTrack = (t: Row) => ({ id: t.id, title: t.title, artistId: t.artist_id, artist: t.artist, albumId: t.album_id, album: t.album, genre: t.genre, duration: t.duration, sampleRate: t.sample_rate, bitDepth: t.bit_depth, channels: t.channels, plays: t.play_count, promoted: !!t.promoted, promoText: t.promo_text, published: !!t.published, cover: media(t.cover_key), createdAt: t.created_at, rhythm: media(t.rhythm_key) });
@@ -248,10 +343,14 @@ route('GET', '/api/home', async (req, env, { user }) => {
     ]);
     return { promoted, fresh, popular, albums: albums.map(mapAlbum), artists: artists.map(mapArtist), genres: genres.map(g => g.genre), editorial };
   };
-  // The admin sees a new upload at once; listeners within 30 s.
+
   return json(user.role === 'admin' ? await loadShared() : await memo('home', 30, loadShared));
 });
 
+route('GET', '/api/catalog/stamp', async (req, env) => {
+  const r = await one(env, 'SELECT COUNT(*) c, COALESCE(MAX(created_at),0) m FROM tracks WHERE published=1');
+  return json({ stamp: `${r.c}.${r.m}` });
+});
 route('GET', '/api/catalog', async (req, env, { user }) => {
   const load = () => tracks(env, 'WHERE t.published=1 ORDER BY t.created_at DESC LIMIT 200');
   return json({ tracks: user.role === 'admin' ? await load() : await memo('catalog', 30, load) });
@@ -294,7 +393,6 @@ route('GET', '/api/albums/:id', async (req, env, { params }) => {
   return json({ ...mapAlbum(a), tracks: await tracks(env, 'WHERE t.published=1 AND t.album_id=? ORDER BY t.created_at', params.id) });
 });
 
-// ---------- library ----------
 route('GET', '/api/likes', async (req, env, { user }) => json({
   tracks: await tracks(env, 'JOIN likes l ON l.track_id=t.id WHERE l.user_id=? AND t.published=1 ORDER BY l.created_at DESC', user.id),
 }));
@@ -339,7 +437,7 @@ route('PATCH', '/api/playlists/:id', async (req, env, { user, params }) => {
   const b = await body(req);
   const name = b.name === undefined ? p.name : str(b.name, 80);
   if (!name) return fail(400, 'Pleylist nomini kiriting');
-  // Public playlists appear on everyone's home page, so only the admin can publish.
+
   const pub = user.role === 'admin' && b.public !== undefined ? (b.public ? 1 : 0) : p.public;
   await run(env, 'UPDATE playlists SET name=?,public=? WHERE id=?', name, pub, p.id);
   return json({ ok: true });
@@ -362,10 +460,8 @@ route('DELETE', '/api/playlists/:id/tracks/:track', async (req, env, { user, par
   return json({ ok: true });
 });
 
-// ---------- playback ----------
 const streamSig = (env: Env, trackId: string, userId: string, exp: number) => hmac(env.SIGNING_SECRET, `${trackId}.${userId}.${exp}`);
 
-// Ads are decided here, not in the client: without a completed ad view no stream URL is issued.
 route('POST', '/api/play', async (req, env, { user }) => {
   const b = await body(req);
   const trackId = str(b.trackId, 40);
@@ -375,8 +471,7 @@ route('POST', '/api/play', async (req, env, { user }) => {
   const e = await entitlement(env, user, s);
   const every = Number(s.ad_every) || 0;
   if (!e.premium && every > 0 && user.plays_since_ad >= every) {
-    // A silent ad cannot run on a locked screen and would stall the queue. The counter stays due, so it shows on the next foreground play.
-    // shortcut: `hidden` is client-reported and a modified client could skip silent ads, upgrade by uploading audio ads, which always play.
+
     const ad = await first(env, `SELECT * FROM ads WHERE active=1 ${b.hidden ? 'AND audio_key IS NOT NULL' : ''} ORDER BY RANDOM() LIMIT 1`);
     if (ad || !b.hidden) {
     const duration = ad ? ad.duration : Number(s.ad_seconds) || 15;
@@ -388,14 +483,13 @@ route('POST', '/api/play', async (req, env, { user }) => {
     }
   }
   const t0 = now(), exp = t0 + Math.ceil(t.duration) + 6 * 3600;
-  // Paying listeners cause no write here; a start is only stored once it counts, keeping D1 writes and size down.
+
   if (!e.premium) await run(env, 'UPDATE users SET plays_since_ad=plays_since_ad+1,last_seen=? WHERE id=?', t0, user.id);
   else if (t0 - user.last_seen > 300) await run(env, 'UPDATE users SET last_seen=? WHERE id=?', t0, user.id);
   const playId = `${t.id}.${t0}.${await hmac(env.SIGNING_SECRET, `play.${t.id}.${user.id}.${t0}`)}`;
   return json({ playId, url: `/media/stream/${t.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, t.id, user.id, exp)}` });
 });
 
-// Spotify counts a stream after 30 s; shorter tracks count at half length.
 route('POST', '/api/plays/:id/counted', async (req, env, { user, params }) => {
   const [trackId, startedRaw, sig] = params.id.split('.');
   const started = Number(startedRaw);
@@ -403,7 +497,7 @@ route('POST', '/api/plays/:id/counted', async (req, env, { user, params }) => {
   const t = await first(env, 'SELECT duration FROM tracks WHERE id=?', trackId);
   if (!t) return fail(404, 'Topilmadi');
   if (now() - started < Math.min(30, t.duration / 2) - 2) return json({ counted: false });
-  // The signature is the row id, so a repeated report cannot count twice.
+
   const r = await run(env, 'INSERT OR IGNORE INTO plays (id,user_id,track_id,started_at,counted) VALUES (?,?,?,?,1)', sig, user.id, trackId, started);
   if (r.meta.changes) await run(env, 'UPDATE tracks SET play_count=play_count+1 WHERE id=?', trackId);
   return json({ counted: true });
@@ -425,7 +519,6 @@ route('POST', '/api/ads/:view/click', async (req, env, { user, params }) => {
   return json({ ok: true });
 });
 
-// ---------- plans & payments ----------
 const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort, offlineLimit: p.offline_limit });
 
 route('GET', '/api/plans', async (req, env, { user }) => {
@@ -438,7 +531,7 @@ route('GET', '/api/plans', async (req, env, { user }) => {
   return json({ plans: plans.map(mapPlan), pending, family, card: { number: s.card_number, holder: s.card_holder }, click: clickReady(s) });
 });
 const clickReady = (s: Record<string, string>): boolean => !!(s.click_service_id && s.click_merchant_id && s.click_secret);
-// Admins, the exempt list and a switched-off plan system never pay.
+
 async function mustBeAbleToPay(env: Env, user: Row): Promise<void> {
   const e = await entitlement(env, user, await settings(env));
   if (['admin', 'exempt', 'plans_off'].includes(e.reason)) fail(400, 'Sizga to\'lov kerak emas');
@@ -453,7 +546,7 @@ route('POST', '/api/payments/click', async (req, env, { user }) => {
   if (!clickReady(s)) return fail(503, 'Click hali ulanmagan');
   const plan = await first(env, 'SELECT * FROM plans WHERE id=? AND active=1', str((await body(req)).planId, 40));
   if (!plan) return fail(404, 'Tarif topilmadi');
-  // An unpaid order may still be open on Click's page, so it is reused, never cancelled.
+
   const open = await first(env, "SELECT id FROM payments WHERE user_id=? AND plan_id=? AND amount=? AND provider='click' AND status='pending'", user.id, plan.id, plan.price_uzs);
   const id = open?.id ?? uid();
   if (!open) await run(env, "INSERT INTO payments (id,user_id,plan_id,amount,reference,provider,created_at) VALUES (?,?,?,?,'Click','click',?)", id, user.id, plan.id, plan.price_uzs, now());
@@ -461,7 +554,6 @@ route('POST', '/api/payments/click', async (req, env, { user }) => {
   return json({ url: `https://my.click.uz/services/pay?${q}` }, 201);
 });
 
-// Click SHOP API: https://docs.click.uz/en/shop-api/requests. The signature is the only proof a call really came from Click.
 route('POST', '/api/click/callback', async (req, env) => {
   const f = await req.formData();
   const get = (k: string): string => String(f.get(k) ?? '');
@@ -487,7 +579,7 @@ route('POST', '/api/click/callback', async (req, env) => {
     await run(env, "UPDATE payments SET status='rejected',decided_at=? WHERE id=? AND status='pending'", now(), p.id);
     return reply(-9, 'Transaction cancelled');
   }
-  // The status guard means Click's retries cannot extend a plan twice.
+
   const done = await run(env, "UPDATE payments SET status='approved',decided_at=? WHERE id=? AND status='pending'", now(), p.id);
   if (!done.meta.changes) return reply(-4, 'Already paid');
   await grantPaid(env, p);
@@ -521,14 +613,12 @@ route('DELETE', '/api/family/:id', async (req, env, { user, params }) => {
   return json({ ok: true });
 });
 
-// ---------- offline ----------
-// 0 closed, -1 unlimited, otherwise a song limit. It follows the plan, so a lapsed plan closes offline and paying reopens it.
 const OFFLINE_FOREVER = 3650 * DAY;
 async function offlineAccess(env: Env, user: Row): Promise<{ limit: number; until: number }> {
   if (user.role === 'admin') return { limit: -1, until: now() + OFFLINE_FOREVER };
   const e = await entitlement(env, user, await liveSettings(env));
   if (e.reason !== 'plan' && e.reason !== 'family') {
-    // The plan system may be off for everyone; a real unexpired plan still counts.
+
     if (user.plan_expires <= now()) return { limit: 0, until: 0 };
     return { limit: (await one(env, 'SELECT offline_limit l FROM plans WHERE id=?', user.plan_id))?.l ?? 0, until: user.plan_expires };
   }
@@ -538,7 +628,7 @@ async function offlineAccess(env: Env, user: Row): Promise<{ limit: number; unti
 route('GET', '/api/offline', async (req, env, { user }) => {
   const a = await offlineAccess(env, user);
   const list = await tracks(env, 'JOIN offline_items o ON o.track_id=t.id WHERE o.user_id=? AND t.published=1 ORDER BY o.position,o.added_at', user.id);
-  // After a downgrade the songs beyond the new limit stay listed but locked, in the listener's own order.
+
   return json({ limit: a.limit, validUntil: a.until, items: list.map((t, i) => ({ ...t, allowed: a.limit === -1 || i < a.limit })) });
 });
 route('POST', '/api/offline', async (req, env, { user }) => {
@@ -571,9 +661,7 @@ route('GET', '/api/offline/:id/url', async (req, env, { user, params }) => {
   return json({ url: `/media/stream/${params.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, params.id, user.id, exp)}` });
 });
 
-// ---------- notifications ----------
-// A device only remembers how far it has read, so "new song to everyone" adds one row however many devices exist.
-const PUSH_CONTACT = 'https://rythm.svrvs-rythm.workers.dev';
+const PUSH_CONTACT = 'https://rythm.svrvs.uz';
 const NUDGE_AFTER = 7 * DAY, NUDGE_EVERY = 14 * DAY;
 async function addNotice(env: Env, title: string, body: string, url: string, userId: string | null = null): Promise<void> {
   await run(env, 'INSERT INTO notices (title,body,url,user_id,created_at) VALUES (?,?,?,?,?)', title, body, url, userId, now());
@@ -583,7 +671,7 @@ route('POST', '/api/notices/subscribe', async (req, env, { user }) => {
   const b = await body(req);
   const kind = b.kind === 'android' ? 'android' : 'web', endpoint = str(b.endpoint, 1000);
   if (kind === 'web' ? !/^https:\/\/[^\s]+$/.test(endpoint) : !/^[0-9a-f]{32,64}$/.test(endpoint)) return fail(400, 'Qurilma manzili noto\'g\'ri');
-  const top = (await one(env, 'SELECT COALESCE(MAX(id),0) m FROM notices')).m; // old news is not sent to a new device
+  const top = (await one(env, 'SELECT COALESCE(MAX(id),0) m FROM notices')).m;
   await run(env, `INSERT INTO push_subs (id,user_id,kind,endpoint,seen,tickled,created_at) VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id`, await sha256(endpoint), user.id, kind, endpoint, top, top, now());
   return json({ ok: true }, 201);
@@ -592,13 +680,13 @@ route('POST', '/api/notices/unsubscribe', async (req, env) => {
   await run(env, 'DELETE FROM push_subs WHERE id=?', await sha256(str((await body(req)).endpoint, 1000)));
   return json({ ok: true });
 }, null);
-// Called by the device itself, which has no session in the background. Its long private address is its proof.
+
 route('POST', '/api/notices/next', async (req, env) => {
   const sub = await first(env, 'SELECT * FROM push_subs WHERE id=?', await sha256(str((await body(req)).endpoint, 1000)));
   if (!sub) return json({ notice: null });
   const n = await first(env, 'SELECT id,title,body,url FROM notices WHERE id>? AND (user_id IS NULL OR user_id=?) ORDER BY id DESC LIMIT 1', sub.seen, sub.user_id);
   if (!n) return json({ notice: null });
-  await run(env, 'UPDATE push_subs SET seen=?,tickled=MAX(tickled,?) WHERE id=?', n.id, n.id, sub.id); // several unread become one message, the newest
+  await run(env, 'UPDATE push_subs SET seen=?,tickled=MAX(tickled,?) WHERE id=?', n.id, n.id, sub.id);
   return json({ notice: { title: n.title, body: n.body, url: n.url } });
 }, null);
 route('GET', '/api/admin/notices', async (req, env) => json({
@@ -617,18 +705,18 @@ route('POST', '/api/admin/notices', async (req, env) => {
 async function deliverPush(env: Env): Promise<void> {
   if (!env.VAPID_JWK) return;
   const jwk = JSON.parse(env.VAPID_JWK), t = now();
-  // shortcut: 40 devices a minute fits the free plan's request limit; raise it on Workers Paid when devices outgrow it.
+
   const subs = await all(env, `SELECT s.id,s.endpoint,(SELECT MAX(n.id) FROM notices n WHERE n.id>s.tickled AND (n.user_id IS NULL OR n.user_id=s.user_id)) top
     FROM push_subs s WHERE s.kind='web' AND EXISTS (SELECT 1 FROM notices n WHERE n.id>s.tickled AND (n.user_id IS NULL OR n.user_id=s.user_id)) LIMIT 40`);
   await Promise.all(subs.map(async sub => {
     try {
       const res = await fetch(sub.endpoint, { method: 'POST', headers: { authorization: await vapidHeader(jwk, sub.endpoint, PUSH_CONTACT, t), ttl: '86400', urgency: 'normal', 'content-length': '0' } });
-      if (res.status === 404 || res.status === 410) await run(env, 'DELETE FROM push_subs WHERE id=?', sub.id); // the device left
+      if (res.status === 404 || res.status === 410) await run(env, 'DELETE FROM push_subs WHERE id=?', sub.id);
       else if (res.ok) await run(env, 'UPDATE push_subs SET tickled=? WHERE id=?', sub.top, sub.id);
     } catch (e) { console.error(e); }
   }));
 }
-// People away for a week get one gentle reminder, then at most one every two weeks.
+
 async function nudgeAway(env: Env): Promise<void> {
   const t = now(), s = await settings(env);
   const away = await all(env, `SELECT u.id FROM users u WHERE u.banned=0 AND u.last_seen<? AND u.nudged_at<? AND u.last_seen>0 AND EXISTS (SELECT 1 FROM push_subs p WHERE p.user_id=u.id) LIMIT 200`, t - NUDGE_AFTER, t - NUDGE_EVERY);
@@ -639,7 +727,6 @@ async function nudgeAway(env: Env): Promise<void> {
   }
 }
 
-// ---------- media ----------
 async function serveObject(env: Env, req: Request, key: string, contentType: string, extra: Record<string, string> = {}): Promise<Response> {
   const head = await env.BUCKET.head(key);
   if (!head) return new Response('Topilmadi', { status: 404 });
@@ -662,7 +749,7 @@ async function handleMedia(req: Request, env: Env, url: URL): Promise<Response> 
     if (!good) return new Response('Havola eskirgan', { status: 403 });
     const t = await first(env, 'SELECT audio_key FROM tracks WHERE id=?', stream[1]);
     if (!t) return new Response('Topilmadi', { status: 404 });
-    return serveObject(env, req, t.audio_key, 'audio/wav', { 'cache-control': 'private, max-age=3600, no-transform' }); // no-transform: no proxy or carrier may recompress the WAV
+    return serveObject(env, req, t.audio_key, 'audio/wav', { 'cache-control': 'private, max-age=3600, no-transform' });
   }
   const pub = /^\/media\/((covers|adaudio|apk|rhythm)\/[0-9a-f]{32}\.(jpg|png|webp|wav|apk|bin))$/.exec(url.pathname);
   if (!pub) return new Response('Topilmadi', { status: 404 });
@@ -671,7 +758,6 @@ async function handleMedia(req: Request, env: Env, url: URL): Promise<Response> 
   return serveObject(env, req, pub[1], types[pub[3]], extra);
 }
 
-// ---------- install ----------
 async function mobileconfig(req: Request, env: Env): Promise<Response> {
   const s = await settings(env);
   const origin = new URL(req.url).origin;
@@ -699,7 +785,13 @@ const mapRelease = (r: Row | null) => r && ({ id: r.id, versionCode: r.version_c
 
 route('GET', '/api/app/latest', async (req, env) => json({ release: mapRelease(await latestRelease(env)) }), null);
 
-// ---------- admin ----------
+route('PUT', '/api/admin/diag', async (req, env) => {
+  const log = await req.text();
+  if (log.length > 64000) return fail(413, 'Jurnal juda katta');
+  await env.BUCKET.put('diag/playback.json', log, { httpMetadata: { contentType: 'application/json' } });
+  return json({ ok: true });
+}, 'admin');
+route('GET', '/api/admin/diag', async (req, env) => json({ log: await (await env.BUCKET.get('diag/playback.json'))?.text() ?? null }), 'admin');
 route('GET', '/api/admin/stats', async (req, env) => {
   const t = now();
   const [users, new7, active1, active30, paid, exempt, plays, plays7, storage, pendingPay, revenue, top7, topAll, daily, signups, revenuePlans] = await Promise.all([
@@ -723,7 +815,6 @@ route('GET', '/api/admin/stats', async (req, env) => {
   return json({ users: users.c, newUsers7: new7.c, active1: active1.c, active30: active30.c, paid: paid.c, exempt: exempt.c, plays: plays.c, plays7: plays7.c, storage, pendingPayments: pendingPay.c, revenue30: revenue.c, top7, topAll, daily, signups, planCounts: revenuePlans });
 }, 'admin');
 
-// --- multipart WAV upload ---
 const uploadKey = (key: unknown): string => typeof key === 'string' && /^(audio|adaudio)\/[0-9a-f]{32}\.wav$/.test(key) ? key : fail(400, 'Fayl kaliti noto\'g\'ri');
 
 route('POST', '/api/admin/uploads', async (req, env) => {
@@ -756,7 +847,7 @@ route('POST', '/api/admin/uploads/complete', async (req, env) => {
   const key = uploadKey(b.key);
   const up = env.BUCKET.resumeMultipartUpload(key, str(b.uploadId, 2000));
   await up.complete(b.parts);
-  // Final gate: anything that is not a complete PCM WAV leaves the bucket here.
+
   try { return json({ key, ...await inspectWav(env, key) }); } catch (e) {
     await env.BUCKET.delete(key);
     return fail(415, `Faqat WAV qabul qilinadi: ${(e as Error).message}`);
@@ -848,7 +939,7 @@ route('PUT', '/api/admin/tracks/:id/rhythm', async (req, env, { params }) => {
   const t = await first(env, 'SELECT duration FROM tracks WHERE id=?', params.id);
   if (!t) return fail(404, 'Qo\'shiq topilmadi');
   const buf = await req.arrayBuffer();
-  // 16 bands at 20 frames per second; anything else is not a beat map for this song.
+
   const frames = buf.byteLength / 16;
   if (!Number.isInteger(frames) || Math.abs(frames / 20 - t.duration) > 1) return fail(400, 'Ritm xaritasi noto\'g\'ri');
   const key = `rhythm/${params.id}.bin`;
@@ -857,7 +948,7 @@ route('PUT', '/api/admin/tracks/:id/rhythm', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-route('GET', '/api/admin/fingerprints', async (req, env) => json({ tracks: await all(env, 'SELECT t.id,t.title,a.name artist,t.fingerprint fp FROM tracks t JOIN artists a ON a.id=t.artist_id WHERE t.fingerprint IS NOT NULL') }), 'admin');
+route('GET', '/api/admin/fingerprints', async (req, env) => json({ tracks: await all(env, 'SELECT t.id,t.title,a.name artist,t.genre,t.fingerprint fp FROM tracks t JOIN artists a ON a.id=t.artist_id WHERE t.fingerprint IS NOT NULL') }), 'admin');
 route('PUT', '/api/admin/tracks/:id/fingerprint', async (req, env, { params }) => {
   const fp = (await body(req)).fp;
   const text = JSON.stringify(fp);
@@ -899,7 +990,7 @@ route('GET', '/api/admin/users', async (req, env) => {
 route('GET', '/api/admin/users.csv', async (req, env) => {
   const rows = await all(env, 'SELECT u.name,u.email,u.created_at,u.last_seen,u.plan_expires,u.plan_exempt,u.banned,pl.name plan_name FROM users u LEFT JOIN plans pl ON pl.id=u.plan_id ORDER BY u.created_at DESC');
   const day = (t: number): string => (t ? new Date(t * 1000).toISOString().slice(0, 10) : '');
-  // A leading = + - @ would run as a formula in Excel, and names are typed by users.
+
   const cell = (v: unknown): string => { const c = String(v ?? ''); return `"${(/^[=+\-@\t\r]/.test(c) ? `'${c}` : c).replaceAll('"', '""')}"`; };
   const lines = rows.map(r => [r.name, r.email, day(r.created_at), day(r.last_seen), r.plan_expires > now() ? r.plan_name ?? 'Tarif' : '', day(r.plan_expires > now() ? r.plan_expires : 0), r.plan_exempt ? 'ha' : '', r.banned ? 'ha' : ''].map(cell).join(','));
   return new Response(`\ufeff${['Ism,Email,Ro\'yxatdan o\'tgan,Oxirgi kirgan,Tarif,Tarif tugashi,Plansiz,Bloklangan', ...lines].join('\r\n')}\r\n`, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="foydalanuvchilar.csv"', 'cache-control': 'no-store' } });
@@ -922,7 +1013,6 @@ route('PATCH', '/api/admin/users/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-// Permanent: two steps on purpose, an account must be blocked before it can be removed.
 route('DELETE', '/api/admin/users/:id', async (req, env, { params }) => {
   const u = await first(env, 'SELECT role,banned FROM users WHERE id=?', params.id);
   if (!u) return fail(404, 'Foydalanuvchi topilmadi');
@@ -951,7 +1041,7 @@ route('POST', '/api/admin/payments/:id/:decision', async (req, env, { params }) 
   if (!['approve', 'reject'].includes(params.decision)) fail(404, 'Topilmadi');
   const p = await first(env, 'SELECT p.*,pl.days FROM payments p JOIN plans pl ON pl.id=p.plan_id WHERE p.id=?', params.id);
   if (!p) return fail(404, 'To\'lov topilmadi');
-  // The status guard makes a double click unable to extend a plan twice.
+
   const r = await run(env, "UPDATE payments SET status=?,decided_at=? WHERE id=? AND status='pending'", params.decision === 'approve' ? 'approved' : 'rejected', now(), p.id);
   if (!r.meta.changes) fail(409, 'To\'lov allaqachon ko\'rib chiqilgan');
   if (params.decision === 'approve') await grantPaid(env, p);
@@ -962,7 +1052,7 @@ const httpUrl = (v: unknown): string => {
   const s = str(v, 500);
   if (!s) return '';
   if (s.startsWith('/') && !s.startsWith('//')) return s;
-  try { if (['http:', 'https:'].includes(new URL(s).protocol)) return s; } catch { /* falls through */ }
+  try { if (['http:', 'https:'].includes(new URL(s).protocol)) return s; } catch {  }
   return fail(400, "Havola noto'g'ri");
 };
 route('GET', '/api/admin/ads', async (req, env) => json({ ads: await all(env, 'SELECT * FROM ads ORDER BY created_at DESC') }), 'admin');
@@ -993,7 +1083,6 @@ route('DELETE', '/api/admin/ads/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-// Keys are managed only from a signed-in session, so a leaked key cannot mint more keys or hide itself.
 const panelOnly = (req: Request): void => { if (req.headers.has('authorization')) fail(403, 'API kalitlarni faqat admin paneldan boshqarish mumkin'); };
 route('GET', '/api/admin/api-keys', async (req, env) => { panelOnly(req); return json({ keys: await all(env, 'SELECT id,name,hint,created_at,last_used FROM api_keys ORDER BY created_at DESC') }); }, 'admin');
 route('POST', '/api/admin/api-keys', async (req, env) => {
@@ -1002,17 +1091,17 @@ route('POST', '/api/admin/api-keys', async (req, env) => {
   if (!name) return fail(400, 'Kalit nomini kiriting');
   const key = `rk_${hex(crypto.getRandomValues(new Uint8Array(32)))}`;
   await run(env, 'INSERT INTO api_keys (id,name,key_hash,hint,created_at) VALUES (?,?,?,?,?)', uid(), name, await sha256(key), key.slice(-6), now());
-  return json({ key }, 201); // the only time the full key is ever shown
+  return json({ key }, 201);
 }, 'admin');
 route('DELETE', '/api/admin/api-keys/:id', async (req, env, { params }) => { panelOnly(req); await run(env, 'DELETE FROM api_keys WHERE id=?', params.id); return json({ ok: true }); }, 'admin');
-// Built from the live route table, so it can never fall behind the code.
+
 route('GET', '/api/admin/docs', async () => json({
   auth: 'Authorization: Bearer rk_...',
   endpoints: routes.filter(r => r.guard === 'admin' && !r.path.includes('api-keys')).map(r => ({ method: r.method, path: r.path })),
 }), 'admin');
 
 const SETTING_KEYS = ['smtp_user', 'click_service_id', 'click_merchant_id', 'email_from', 'plans_enabled', 'ad_every', 'ad_seconds', 'site_name', 'hero_title', 'hero_sub', 'card_number', 'card_holder', 'support_url'];
-// The secret can be replaced from the panel but never read back.
+
 route('GET', '/api/admin/settings', async (req, env) => { const { click_secret, smtp_pass, ...rest } = await settings(env); return json({ ...rest, click_secret_set: !!click_secret, smtp_pass_set: !!smtp_pass }); }, 'admin');
 route('PATCH', '/api/admin/settings', async (req, env) => {
   const b = await body(req);
@@ -1058,11 +1147,9 @@ route('DELETE', '/api/admin/releases/:id', async (req, env, { params }) => {
   return json({ ok: true });
 }, 'admin');
 
-// ---------- entry ----------
-// D1 has a hard 10 GB limit. Stats read 30 days of plays; all-time counts live on tracks.play_count.
 async function cleanup(env: Env): Promise<void> {
   const t = now();
-  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t], ['signups', 'expires', t], ['notices', 'created_at', t - 60 * DAY]];
+  const jobs: [string, string, number][] = [['plays', 'started_at', t - 35 * DAY], ['ad_views', 'started_at', t - 7 * DAY], ['attempts', 'at', t - DAY], ['sessions', 'expires', t], ['signups', 'expires', t], ['notices', 'created_at', t - 60 * DAY], ['oauth_codes', 'expires', t]];
   for (const [table, col, before] of jobs) {
     for (let i = 0; i < 20; i++) {
       const r = await run(env, `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${col}<? LIMIT 20000)`, before);
@@ -1078,6 +1165,7 @@ export default {
   },
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+    if (url.hostname === 'svrvs.uz') return Response.redirect(`https://rythm.svrvs.uz${url.pathname}${url.search}`, 301);
     try {
       if (url.pathname.startsWith('/media/')) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return new Response(null, { status: 405 });
@@ -1094,6 +1182,13 @@ export default {
         if (!m) continue;
         const params = Object.fromEntries(r.names.map((n, i) => [n, decodeURIComponent(m[i + 1])]));
         let user: Row | null = null;
+        if (/^Bearer ut_/.test(req.headers.get('authorization') || '')) {
+          const need = TOKEN_ROUTES.get(`${r.method} ${r.path}`);
+          if (!need) fail(403, 'Bu amal API orqali mavjud emas');
+          user = await currentUser(env, req);
+          if (!user) fail(401, 'API kalit noto\'g\'ri');
+          if (need === 'write' && !String(user!.token_scope).split(' ').includes('write')) fail(403, 'Bu kalitda o\'zgartirish ruxsati yo\'q');
+        }
         if (r.guard) {
           user = await currentUser(env, req);
           if (!user) return fail(401, 'Avval tizimga kiring');

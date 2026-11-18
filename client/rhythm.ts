@@ -1,5 +1,3 @@
-// TypeScript, client/rhythm.ts, browser and node: turns a WAV's own PCM into a small beat map, read-only, the audio is never changed.
-// Playback reads this map by currentTime. Audio never enters Web Audio, which would stop iOS background playback.
 import { parseWav } from '../src/lib.ts';
 
 export const BANDS = 16, FPS = 20;
@@ -27,7 +25,6 @@ function fft(re: Float64Array, im: Float64Array): void {
 
 export const analyzeWav = (bytes: Uint8Array): Uint8Array => analyzeFull(bytes).map;
 
-// Band loudness is taken before each band is scaled, so it still tells how much bass or treble the song really has.
 export function analyzeFull(bytes: Uint8Array): { map: Uint8Array; bandPeaks: number[] } {
   const w = parseWav(bytes), v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const width = w.bitDepth / 8, step = width * w.channels, end = Math.min(bytes.length, w.dataOffset + w.dataSize);
@@ -38,7 +35,7 @@ export function analyzeFull(bytes: Uint8Array): { map: Uint8Array; bandPeaks: nu
     if (w.bitDepth === 24) return ((v.getInt8(p + 2) << 16) | v.getUint16(p, true)) / 8388608;
     return v.getInt32(p, true) / 2147483648;
   };
-  // Nearest power of two to 21 ms, so 44.1 and 48 kHz copies of a song are measured with the same window.
+
   const size = 2 ** Math.round(Math.log2(w.sampleRate / 46));
   const hann = Float64Array.from({ length: size }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / size));
   const edges = Array.from({ length: BANDS + 1 }, (_, i) => Math.max(1, Math.round(40 * Math.pow(16000 / 40, i / BANDS) * size / w.sampleRate)));
@@ -60,7 +57,7 @@ export function analyzeFull(bytes: Uint8Array): { map: Uint8Array; bandPeaks: nu
       raw[f * BANDS + b] = Math.sqrt(sum / (hi - edges[b]));
     }
   }
-  // Each band is scaled to its own loudest moment, so quiet highs still move the picture.
+
   const out = new Uint8Array(raw.length), bandPeaks: number[] = [];
   for (let b = 0; b < BANDS; b++) {
     let peak = 1e-6, sum = 0;

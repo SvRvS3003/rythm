@@ -1,4 +1,3 @@
-// Java, Updater.java, Android 8+: downloads a release, verifies SHA-256, installs through PackageInstaller.
 package uz.svrvs.rythm;
 
 import android.app.PendingIntent;

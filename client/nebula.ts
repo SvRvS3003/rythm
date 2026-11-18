@@ -1,6 +1,3 @@
-// TypeScript, client/nebula.ts, WebGL 1: light port of the "nebula" Vizzy project by Firecat (@yoniicat), written from its published settings.
-// Chain kept: red spectrum -> scrolling trail 0.98 -> noise warp -> polar map, rotating t*10 deg -> radial glow -> twirl and fish eye -> violet grade -> chromatic split.
-// Rhythm comes from the song's precomputed beat map, so nothing here touches the audio path. Songs without a map use a gentle simulated pulse.
 const VERT = 'attribute vec2 p;varying vec2 v;void main(){v=p*.5+.5;gl_Position=vec4(p,0.,1.);}';
 const NOISE = `
 float hash(vec2 s){return fract(sin(dot(s,vec2(12.9898,78.233)))*43758.5453);}
@@ -9,38 +6,38 @@ return mix(mix(hash(i),hash(i+vec2(1.,0.)),u.x),mix(hash(i+vec2(0.,1.)),hash(i+v
 const FEED = `precision highp float;varying vec2 v;uniform sampler2D prev,spec;uniform float t,e;${NOISE}
 void main(){
   vec2 uv=v;
-  uv.x+=(noise(vec2(v.y*15.,t*.8))-.5)*.02;                    // Spooky: distortion 15, width 0.02
-  uv.y+=(v.y<.5?1.:-1.)*.0055*(.5+e);                          // "up y" / "down y" transforms: streams leave the centre line
-  float old=texture2D(prev,uv).r*.96;                          // Trail 0.98 at Vizzy's 60 fps equals 0.96 per frame here
+  uv.x+=(noise(vec2(v.y*15.,t*.8))-.5)*.02;
+  uv.y+=(v.y<.5?1.:-1.)*.0055*(.5+e);
+  float old=texture2D(prev,uv).r*.96;
   float amp=texture2D(spec,vec2(v.x,.5)).r;
   float bar=step(abs(v.y-.5),amp*.09)*smoothstep(.18,.5,amp);
   gl_FragColor=vec4(vec3(max(old,bar)),1.);
 }`;
 const FINAL = `precision highp float;varying vec2 v;uniform sampler2D feed;uniform float t,e,aspect;
 const float PI=3.14159265;
-float field(vec2 q){                                           // Polar Coordinates, curvature 1; x scale 0.5 repeats the strip twice around
+float field(vec2 q){
   float a=atan(q.y,q.x)+(45.+t*10.)*PI/180.;
   return .5*(texture2D(feed,vec2(a/PI,clamp(.5+length(q)*.62,0.,1.))).r+texture2D(feed,vec2(a/PI,clamp(.5-length(q)*.62,0.,1.))).r);
 }
 void main(){
   vec2 q=(v-.5)*vec2(aspect,1.)*2.;
   float r=length(q);
-  q*=1.+.25*r*r;                                               // Fish eye 2
-  float tw=.6*smoothstep(1.2,0.,r);q=mat2(cos(tw),-sin(tw),sin(tw),cos(tw))*q;   // Twirl: 0.6
-  q*=mix(.72,1.,smoothstep(0.,.4,r));                          // Bulge/Pinch: strength -1.5, radius 0.2
+  q*=1.+.25*r*r;
+  float tw=.6*smoothstep(1.2,0.,r);q=mat2(cos(tw),-sin(tw),sin(tw),cos(tw))*q;
+  q*=mix(.72,1.,smoothstep(0.,.4,r));
   float s=0.,w=1.,n=0.;
-  for(int i=0;i<10;i++){float k=1.-float(i)*.045;s+=field(q*k)*w;n+=w;w*=.8;}    // God rays decay 0.8 with zoom blur
+  for(int i=0;i<10;i++){float k=1.-float(i)*.045;s+=field(q*k)*w;n+=w;w*=.8;}
   s/=n;
-  float split=.012+.03*e;                                      // Chromatic aberration follows the level
+  float split=.012+.03*e;
   float red=field(q*(1.+split)),blue=field(q*(1.-split));
-  float g=s*1.5+s*s*.64;                                       // Bloom: strength 0.64
-  vec3 c=mix(vec3(.02,0.,.05),vec3(.10,.08,.95),smoothstep(.02,.32,g));          // Sepia + hue 150 + contrast 2 resolve to this ramp
+  float g=s*1.5+s*s*.64;
+  vec3 c=mix(vec3(.02,0.,.05),vec3(.10,.08,.95),smoothstep(.02,.32,g));
   c=mix(c,vec3(.52,.16,1.),smoothstep(.25,.75,g));
   c=mix(c,vec3(1.,.42,.86),smoothstep(.7,1.25,g));
   c=mix(c,vec3(1.),smoothstep(1.2,1.9,g));
   c+=vec3(red,0.,blue)*.16;
   c*=smoothstep(1.75,.45,r);
-  c+=(fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5)/128.;  // dither removes colour banding on 8-bit screens
+  c+=(fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5)/128.;
   gl_FragColor=vec4(c,1.);
 }`;
 
@@ -73,7 +70,6 @@ function target(gl: WebGLRenderingContext, size: number) {
   return { tex, fb };
 }
 
-// Returns a stop function, or null when WebGL is unavailable so the plain background stays.
 export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean, readRhythm: (bins: Uint8Array) => number | null, onLost: () => void): (() => void) | null {
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, powerPreference: 'low-power' });
   if (!gl) return null;
@@ -95,29 +91,32 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
   const frame = (now: number): void => {
     if (stopped) return;
     raf = requestAnimationFrame(frame);
-    if (now - last < 32) return; // 30 fps keeps the phone cool while music plays
-    // Sharp at the screen's real pixels; only a phone that cannot keep up steps down, one notch at a time.
-    const dtFrame = Math.min(100, now - last);
-    slow = now - last > 48 ? slow + 1 : Math.max(0, slow - 1);
-    if (slow > 20 && quality > 0.5) { quality -= 0.125; slow = 0; }
+    if (now - last < 32) return;
+    const raw = now - last;
+    const dtFrame = Math.min(100, raw);
     last = now;
+    const playing = isPlaying();
+
+    level += ((playing ? 1 : 0) - level) * (1 - Math.exp(-(dtFrame / 1000) * (playing ? 2.5 : 1.5)));
+    if (!playing && level < 0.01) level = 0;
+
+    t += (dtFrame / 1000) * level;
+    idle = playing || level > 0 ? 0 : idle + raw;
+    if (idle > 4000) return;
+
+    slow = raw > 48 ? slow + 1 : Math.max(0, slow - 1);
+    if (slow > 20 && quality > 0.5) { quality -= 0.125; slow = 0; }
     const dpr = Math.min(devicePixelRatio || 1, 3);
     const scale = dpr * quality * Math.min(1, 1600 / (Math.max(innerWidth, innerHeight) * dpr));
     const w = Math.round(innerWidth * scale), h = Math.round(innerHeight * scale);
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    const playing = isPlaying();
-    level += ((playing ? 1 : 0) - level) * (playing ? 0.08 : 0.05); // eases in and out, never snaps
-    // Motion runs on its own clock that slows with the music and stops with it.
-    t += (dtFrame / 1000) * level;
-    idle = playing || level > 0.01 ? 0 : idle + 1;
-    if (idle > 150) return; // the picture has faded out, so nothing is drawn until sound returns
     const real = readRhythm(bins);
     let energy: number;
     if (real !== null) {
-      hit = Math.max(hit + (real - hit) * 0.5, hit * 0.82); // sharp attack, soft release, like a meter
+      hit = Math.max(hit + (real - hit) * 0.5, hit * 0.82);
       energy = hit;
     } else {
-      // A song without a map gets a calm pulse, but only while it is really playing.
+
       const beat = Math.pow(Math.max(0, Math.sin(t * 3.7)), 8);
       for (let i = 0; i < BINS; i++) {
         const m = Math.min(i, BINS - i) / (BINS / 2);
@@ -128,7 +127,7 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
       hit *= 0.9;
       energy = Math.max(energy, hit);
     }
-    // Eased so starting, stopping or switching between real and simulated rhythm never jumps.
+
     for (let i = 0; i < BINS; i++) { eased[i] += (bins[i] - eased[i]) * 0.4; shown[i] = eased[i]; }
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, spec);

@@ -1,4 +1,3 @@
-// JavaScript, test/ui.ts, node + playwright: layout overflow sweep and real playback against local dev.
 import { MUTE_ARGS, silence } from './silent.ts';
 import { webkit, chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
@@ -15,9 +14,10 @@ const b = await engine.launch({ args: engine === chromium ? MUTE_ARGS : [] });
 const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, ...(process.env.UA ? { userAgent: process.env.UA } : {}) });
 await silence(ctx);
 const p = await ctx.newPage();
+await p.addInitScript(() => { const play = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { (window as unknown as { __a: HTMLMediaElement }).__a = this; return play.call(this); }; });
 const problems = [];
 p.on('console', m => { if (m.type() === 'error' && !/fonts\.g|access control checks/.test(m.text())) problems.push(`console: ${m.text().slice(0, 200)}`); });
-// WebKit reports a background refresh cut off by the test's own page.goto as an error; it is not an app failure.
+
 p.on('pageerror', e => { if (!/access control checks/.test(e.message)) problems.push(`pageerror: ${e.message}`); });
 
 await p.goto(BASE);
@@ -69,13 +69,14 @@ const overflow = () => p.evaluate(() => {
 });
 const small = () => p.evaluate(() => [...document.querySelectorAll('button.ib, button.btn, button.playbtn, .tabs a')].filter(e => { const r = e.getBoundingClientRect(); return r.width && (r.height < 32 || r.width < 32); }).slice(0, 3).map(e => `${e.className}:${e.getAttribute('aria-label') || e.textContent}`));
 
-// Fresh listener for the player flows
 const pages = ['/', '/search?q=o', '/library', '/liked', '/premium', '/account', '/install', `/artist/${home.artists[0].id}`, `/album/${home.albums[0].id}`, '/admin', '/admin/tracks', '/admin/upload', '/admin/users', '/admin/plans', '/admin/payments', '/admin/ads', '/admin/app', '/admin/settings', '/admin/artists'];
 const shoot = new Set(['/', '/premium', '/admin', '/admin/tracks', '/admin/users']);
 for (const [name, [w, h]] of Object.entries(SIZES)) {
   await p.setViewportSize({ width: w, height: h });
   for (const path of pages) {
-    await p.goto(BASE + path); await p.waitForSelector('.view', { timeout: 15000 }); await p.waitForTimeout(250);
+    await p.goto(BASE + path);
+    await p.waitForSelector('.view', { timeout: 15000 }).catch(async e => { throw new Error(`${name} ${path}: no view after 15 s (${await p.evaluate(() => document.body.innerText.slice(0, 200))})`, { cause: e }); });
+    await p.waitForTimeout(250);
     const bad = await overflow();
     if (bad.length) problems.push(`${name} ${path}: ${bad.join(' | ')}`);
     const tiny = await small();
@@ -84,7 +85,7 @@ for (const [name, [w, h]] of Object.entries(SIZES)) {
   }
 }
 await call('/api/auth/logout', { method: 'POST' });
-await p.evaluate(() => localStorage.clear()); // the app does this on its own logout button
+await p.evaluate(() => localStorage.clear());
 const email = `ui${Date.now()}@test.uz`;
 await p.setViewportSize({ width: 390, height: 844 });
 await p.goto(BASE);
@@ -92,10 +93,12 @@ await p.screenshot({ path: `${OUT}/login.png` });
 await p.getByRole('button', { name: 'Akkaunt yaratish' }).click();
 await p.getByLabel('Ism').fill('Ali'); await p.getByLabel('Email').fill(email); await p.getByLabel('Parol').fill('parol12345');
 await p.getByRole('button', { name: "Ro'yxatdan o'tish" }).click();
-await p.waitForSelector('.hero');
+await p.waitForSelector('.stage');
 await p.screenshot({ path: `${OUT}/listener-home.png` });
 
-// Real playback: time label must advance, on both track and after an enforced ad.
+const netLog: string[] = [];
+p.on('response', r => { const u = new URL(r.url()); if (/^\/(api\/play|media\/)/.test(u.pathname)) netLog.push(`${r.request().method()} ${u.pathname.slice(0, 40)} ${r.status()}`); });
+p.on('requestfailed', r => { const u = new URL(r.url()); if (/^\/(api\/play|media\/)/.test(u.pathname)) netLog.push(`FAILED ${u.pathname.slice(0, 40)} ${r.failure()?.errorText}`); });
 const curTime = () => p.evaluate(() => document.querySelector('.player [data-cur]')?.textContent);
 await p.locator('.card').first().click();
 await p.waitForSelector('.player.show');
@@ -103,8 +106,12 @@ await p.waitForTimeout(3500);
 const t1 = await curTime();
 const adv = await p.evaluate(() => document.querySelector<HTMLInputElement>('.player [data-seek]')?.value);
 console.log('playback time after 3.5s:', t1, 'seek value:', adv);
-if (Number(adv) <= 0.5) problems.push(`playback did not advance (${t1}/${adv})`);
-await p.locator('.player .info').click();
+if (Number(adv) <= 0.5) {
+
+  const a = await p.evaluate(() => { const e = (window as unknown as { __a?: HTMLMediaElement }).__a; return e ? { src: e.src.replace(/\?.*/, ''), paused: e.paused, ready: e.readyState, net: e.networkState, err: e.error?.code ?? null, time: e.currentTime, dur: e.duration } : 'no audio element played'; });
+  problems.push(`playback did not advance (${t1}/${adv}) audio=${JSON.stringify(a)} net=${JSON.stringify(netLog.slice(-8))}`);
+}
+await p.locator('.player .info:not(.ghost)').click();
 await p.waitForSelector('.now.show');
 for (const [name, [w, h]] of Object.entries(SIZES)) {
   await p.setViewportSize({ width: w, height: h }); await p.waitForTimeout(150);
@@ -116,10 +123,10 @@ for (const [name, [w, h]] of Object.entries(SIZES)) {
 await p.setViewportSize({ width: 390, height: 844 });
 await p.getByRole('button', { name: 'Yopish' }).click();
 await p.locator('.player .playbtn').first().waitFor();
-// plays so far: 1. ad_every=2, so second is allowed, third gets the ad.
+
 await p.goto(BASE); await p.waitForSelector('.card');
 await p.locator('.card').first().click(); await p.waitForTimeout(800);
-await p.locator('.card').nth(1).click(); 
+await p.locator('.card').nth(1).click();
 await p.waitForSelector('.ad', { timeout: 6000 });
 await p.screenshot({ path: `${OUT}/ad.png` });
 const ov = await overflow(); if (ov.length) problems.push(`ad: ${ov.join('|')}`);
@@ -129,7 +136,7 @@ await p.waitForTimeout(2500);
 const adv2 = await p.evaluate(() => document.querySelector<HTMLInputElement>('.player [data-seek]')?.value);
 console.log('after ad seek value:', adv2);
 if (Number(adv2) <= 0.3) problems.push('playback did not resume after ad');
-// purchase sheet
+
 await p.goto(BASE + '/premium'); await p.waitForSelector('.plan');
 await p.getByRole('button', { name: 'Tanlash' }).first().click(); await p.waitForSelector('.sheet');
 await p.screenshot({ path: `${OUT}/buy.png` });

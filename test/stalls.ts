@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict';
+import { chromium, webkit } from 'playwright';
+import { MUTE_ARGS, silence } from './silent.ts';
+const BASE = 'http://127.0.0.1:8787';
+const b = process.argv[2] === 'webkit' ? await webkit.launch() : await chromium.launch({ args: [...MUTE_ARGS, '--autoplay-policy=no-user-gesture-required'] });
+const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' });
+await silence(ctx);
+const p = await ctx.newPage();
+const errors: string[] = []; p.on('pageerror', e => errors.push(e.message));
+type W = { __a: HTMLMediaElement; __loads: number; __f?: typeof fetch };
+await p.addInitScript(() => { const w = window as unknown as W; const o = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { w.__a = this; return o.call(this); }; const l = HTMLMediaElement.prototype.load; w.__loads = 0; HTMLMediaElement.prototype.load = function () { w.__loads++; return l.call(this); }; });
+await p.goto(BASE);
+await p.evaluate(() => fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin', password: 'local-dev-pass' }) }));
+await p.goto(BASE); await p.waitForSelector('.tr .hit');
+const songs = p.locator('.tr .hit');
+const state = () => p.evaluate(() => { const a = (window as unknown as W).__a; return { paused: a.paused, mini: document.querySelector('.player .info:not(.ghost) .clip')?.textContent, eyebrow: document.querySelector('.eyebrow')?.textContent, src: a.src, loads: (window as unknown as W).__loads }; });
+const playLink = (mode: string) => p.evaluate(m => { const w = window as unknown as W; const real = w.__f ??= fetch; window.fetch = (u, o) => String(u) !== '/api/play' || m === 'open' ? real(u, o) : new Promise(() => {}); }, mode);
+await songs.nth(0).dispatchEvent('click'); await p.waitForSelector('.player.show'); await p.waitForTimeout(2500);
+const first = await p.locator('.player .info:not(.ghost) .clip').first().textContent();
+
+await playLink('hang');
+await songs.nth(1).dispatchEvent('click'); await p.waitForTimeout(600);
+assert.equal((await state()).paused, true); assert.notEqual((await state()).mini, first);
+await p.waitForTimeout(15500);
+let s = await state();
+assert.equal(s.paused, false, 'sound must come back'); assert.equal(s.mini, first, 'the screen returns to what sounds'); console.log('ok a lost request gives the sound and the title back');
+
+await songs.nth(1).dispatchEvent('click'); await p.waitForTimeout(500);
+assert.equal((await state()).paused, true);
+await p.locator('.stage-go .btn').dispatchEvent('click'); await p.waitForTimeout(300);
+s = await state();
+assert.equal(s.paused, false); assert.equal(s.mini, first); console.log('ok the button cancels a switch that hangs');
+await playLink('open');
+
+const loads0 = s.loads;
+await p.evaluate(() => { Object.defineProperty((window as unknown as W).__a, 'currentTime', { get: () => 5, set() {}, configurable: true }); (window as unknown as W).__a.dispatchEvent(new Event('waiting')); });
+await p.waitForTimeout(5000);
+assert.equal((await state()).eyebrow, 'Yuklanmoqda', 'a stall must not read as playing'); console.log('ok a stall reads as loading');
+await p.waitForTimeout(20000);
+assert.ok((await state()).loads > loads0, 'a frozen stream must reconnect'); console.log('ok a frozen stream reconnects');
+await p.evaluate(() => { delete ((window as unknown as W).__a as unknown as Record<string, unknown>).currentTime; });
+await p.waitForTimeout(3000);
+assert.equal((await state()).eyebrow, 'Hozir chalinmoqda', 'and it plays on'); console.log('ok and it plays on');
+assert.deepEqual(errors, []);
+await b.close();

@@ -1,4 +1,3 @@
-// Runs on real, varied sounds written to files with ffmpeg and only analysed. Nothing here plays through the speakers.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -15,7 +14,7 @@ const render = (name: string, filter: string, extra: string[] = [], secs = 50): 
   const { map, bandPeaks } = analyzeFull(new Uint8Array(readFileSync(f)));
   return makeFingerprint(map, bandPeaks);
 };
-// A small song: a chord sequence, a kick and hats. Each part can be changed on its own.
+
 const song = (bpm: number, roots: number[], kick = 60, hat = 0.15): string => {
   const beat = 60 / bpm, chord = roots.map((r, i) => `gt(${i + 1}\\,mod(floor(t/${beat * 4})\\,${roots.length}))*lt(${i - 1}\\,mod(floor(t/${beat * 4})\\,${roots.length}))*eq(${i}\\,mod(floor(t/${beat * 4})\\,${roots.length}))*(sin(2*PI*${r}*t)+sin(2*PI*${r * 1.26}*t)+sin(2*PI*${r * 1.5}*t))`).join('+');
   return `0.12*(${chord})+0.5*exp(-18*mod(t\\,${beat}))*sin(2*PI*${kick}*t)+${hat}*random(0)*exp(-50*mod(t+${beat / 2}\\,${beat}))`;

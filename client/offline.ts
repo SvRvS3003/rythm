@@ -1,10 +1,9 @@
-// TypeScript, client/offline.ts, page: downloads songs into the encrypted store and keeps the local licence in step with the account.
 import { CHUNK, all, deviceKey, get, licenseOpen, put, removeSong, sealChunk, wipeAll, type License, type OfflineRecord } from './offline-store.ts';
 
-const NET_STEP = 8 * CHUNK; // one network request per 8 MiB keeps R2 and Worker requests low
+const NET_STEP = 8 * CHUNK;
 const IMG_CACHE = 'rythm-offline-img';
 export const ready = new Set<string>();
-export const active = new Map<string, number>(); // song id -> progress 0..1
+export const active = new Map<string, number>();
 const listeners = new Set<() => void>();
 export const onChange = (f: () => void): void => { listeners.add(f); };
 const changed = (): void => { for (const f of listeners) f(); };
@@ -15,9 +14,9 @@ export async function refreshReady(): Promise<License | undefined> {
     ready.clear();
     for (const s of await all<OfflineRecord>('songs')) if (s.done && licenseOpen(l, s.id)) ready.add(s.id);
     return l;
-  } catch { return undefined; } // private mode: offline simply stays unavailable
+  } catch { return undefined; }
 }
-// Online truth from the account: allowed songs, limit, plan end. A lapsed plan locks files without deleting them, so paying reopens them at once.
+
 export async function syncLicense(user: string, state: { limit: number; items: { id: string; allowed: boolean }[]; validUntil: number }): Promise<void> {
   const prev = await get<License>('meta', 'license');
   if (prev && prev.user !== user) await wipeAll();
@@ -26,7 +25,7 @@ export async function syncLicense(user: string, state: { limit: number; items: {
   for (const s of await all<OfflineRecord>('songs')) if (!listed.has(s.id) && !active.has(s.id)) await removeSong(s.id);
   const before = [...ready].join();
   await refreshReady();
-  if ([...ready].join() !== before) changed(); // only a real change redraws, or the offline page would redraw itself forever
+  if ([...ready].join() !== before) changed();
 }
 export async function download(track: { id: string; cover?: string | null; rhythm?: string | null }, url: () => Promise<string>): Promise<void> {
   if (active.has(track.id) || ready.has(track.id)) return;
@@ -37,7 +36,7 @@ export async function download(track: { id: string; cover?: string | null; rhyth
     navigator.storage?.persist?.().catch(() => {});
     let rec = await get<OfflineRecord>('songs', track.id);
     const src = await url();
-    let at = rec?.have ?? 0; // resumes where a dropped connection stopped
+    let at = rec?.have ?? 0;
     let size = rec?.size ?? 0;
     do {
       const res = await fetch(src, { headers: { range: `bytes=${at * CHUNK}-${at * CHUNK + NET_STEP - 1}` } });
@@ -49,7 +48,7 @@ export async function download(track: { id: string; cover?: string | null; rhyth
       await put('songs', track.id, rec);
       active.set(track.id, Math.min(1, (at * CHUNK) / size)); changed();
     } while (at * CHUNK < size);
-    // Cover and beat map are not music, so they sit in a plain cache for the player to find offline.
+
     const c = await caches.open(IMG_CACHE);
     for (const u of [track.cover, track.rhythm]) if (u) await c.add(u).catch(() => {});
     await refreshReady();

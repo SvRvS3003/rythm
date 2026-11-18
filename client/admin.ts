@@ -1,23 +1,100 @@
-// TypeScript, client/admin.ts, browser: the single admin panel. Loaded only for admins; the API enforces the role.
 import { analyzeFull, analyzeWav } from './rhythm.ts';
+import { matchGenres, guessGenres, listen, matchNames, suggestTitles, type Sound } from './naming.ts';
 import { compare, makeFingerprint, type Comparison, type Fingerprint } from './fingerprint.ts';
-import { h, api, cover, fmt, money, toast, sheet, refresh, go, S, type Row } from './app.ts';
+import { rank, verdict } from './identify.ts';
+import { h, api, cover, fmt, money, toast, sheet, refresh, go, playList, S, type Row } from './app.ts';
 
 const guard = <A extends unknown[]>(fn: (...a: A) => unknown) => async (...a: A): Promise<void> => { try { await fn(...a); } catch (e) { toast((e as Error).message); } };
-const TABS = [['upload', '+ Musiqa qo\'shish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['notices', 'Bildirishnoma'], ['api', 'API'], ['settings', 'Sozlamalar']];
+const TABS = [['upload', '+ Musiqa qo\'shish'], ['find', 'Qo\'shiqni topish'], ['', 'Statistika'], ['tracks', 'Qo\'shiqlar'], ['artists', 'Ijrochilar'], ['users', 'Foydalanuvchilar'], ['plans', 'Tariflar'], ['payments', 'To\'lovlar'], ['ads', 'Reklama'], ['app', 'Ilova'], ['notices', 'Bildirishnoma'], ['api', 'API'], ['settings', 'Sozlamalar']];
 const field = (label: string, input: Node) => h('label', { class: 'f' }, label, input);
-const date = (t: number): string => (t ? new Date(t * 1000).toLocaleDateString('ru-RU') : '—');
+
+function chips(input: HTMLInputElement, ideas: () => string[], typing: (text: string) => string[]): { row: HTMLElement; paint: () => void; edited: () => boolean } {
+  const row = h('div', { class: 'name-chips' });
+  let touched = false, typed = false;
+  const paint = (): void => {
+    const list = typed && input.value.trim() ? typing(input.value) : ideas();
+    row.replaceChildren(...list.filter(o => o !== input.value).map(o => h('button', { type: 'button', class: 'pill', onclick: () => { input.value = o; touched = true; typed = false; paint(); } }, o)));
+  };
+  input.addEventListener('input', () => { touched = true; typed = true; paint(); });
+  return { row, paint, edited: () => touched };
+}
+let ownGenres: string[] = [];
+const genreTyping = (text: string): string[] => matchGenres(text, ownGenres);
+
+const LISTEN_SECONDS = 10;
+const ANDROID_MIC_APK = 7;
+
+function micProblem(e: Error): string {
+  const app = (window as unknown as { RythmNative?: { versionCode?: () => number } }).RythmNative;
+  if (app?.versionCode && app.versionCode() < ANDROID_MIC_APK) return 'Mikrofon uchun ilovani yangilang: Android ilovasining yangi versiyasi kerak.';
+  if (e.name === 'NotFoundError') return 'Bu qurilmada mikrofon topilmadi.';
+  if (e.name !== 'NotAllowedError') return `Mikrofon ochilmadi: ${e.name}`;
+  if (app) return 'Mikrofon taqiqlangan. Telefon Sozlamalari → Ilovalar → SvRvS Rythm → Ruxsatlar → Mikrofon ni yoqing.';
+  if (/iPhone|iPad/.test(navigator.userAgent)) return 'Mikrofon taqiqlangan. iPhone Sozlamalari → Ilovalar → Safari → Mikrofon → "So\'rash" ni tanlang, ilovani yopib qayta oching.';
+  return 'Mikrofon taqiqlangan. Brauzer manzil qatoridagi qulf belgisidan mikrofonga ruxsat bering.';
+}
+async function recordSong(tick: (left: number) => void): Promise<Uint8Array> {
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('Bu qurilma mikrofonni ochib bera olmaydi');
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }).catch((e: Error) => { throw new Error(micProblem(e)); });
+  const parts: Blob[] = [];
+  try {
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => parts.push(e.data);
+    const done = new Promise(ok => { rec.onstop = ok; });
+    rec.start();
+    for (let left = LISTEN_SECONDS; left > 0; left--) { tick(left); await new Promise(ok => setTimeout(ok, 1000)); }
+    rec.stop();
+    await done;
+  } finally { for (const t of stream.getTracks()) t.stop(); }
+  const decoded = await new OfflineAudioContext(1, 1, 48000).decodeAudioData(await new Blob(parts).arrayBuffer());
+  const pcm = decoded.getChannelData(0), bytes = new Uint8Array(44 + pcm.length * 2), v = new DataView(bytes.buffer);
+  bytes.set(new TextEncoder().encode('RIFF\0\0\0\0WAVEfmt '));
+  v.setUint32(4, bytes.length - 8, true); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 48000, true); v.setUint32(28, 96000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  bytes.set(new TextEncoder().encode('data'), 36);
+  v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 32767, true);
+  return bytes;
+}const date = (t: number): string => (t ? new Date(t * 1000).toLocaleDateString('ru-RU') : '—');
 const gb = (b: number): string => (b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`);
 const nodes = (l: unknown[]): Node[] => l.filter(Boolean) as Node[];
 const kpi = (v: string | number, l: string) => h('div', { class: 'kpi' }, h('b', null, v), h('span', null, l));
 
 export async function adminView(el: HTMLElement, parts: string[]): Promise<void> {
   const tab = parts[0] || '';
-  el.append(h('h1', null, 'Admin panel'), h('nav', { class: 'anav' }, TABS.map(([p, l]) => h('a', { class: `pill ${tab === p ? 'on' : ''}`, href: `/admin${p ? '/' + p : ''}` }, l))));
+  let tapped = 0;
+  const title = h('h1', { style: 'display:inline-block;user-select:none;-webkit-user-select:none;touch-action:manipulation', onclick: () => { const t = performance.now(); if (t - tapped < 400) { tapped = 0; flipTitle(title); } else tapped = t; } }, 'Admin panel');
+  el.append(title, h('nav', { class: 'anav' }, [...TABS.map(([p, l]) => h('a', { class: `pill ${tab === p ? 'on' : ''}`, href: `/admin${p ? '/' + p : ''}` }, l)),
+
+    h('a', { class: 'pill', href: 'https://dashboard.elysiummusic.org/', target: '_blank', rel: 'noopener' }, 'Elysium ↗')]));
   await (VIEWS[tab] || VIEWS[''])(el);
 }
 
-// Covers only need to look sharp on a phone; a 5 MB photo would slow every page. Music never passes through here.
+async function versionLines(): Promise<Node[]> {
+  const apk = /SvRvSRythmApp\/(\S+)/.exec(navigator.userAgent)?.[1];
+  const shell = ('caches' in window ? await caches.keys() : []).find(k => k.startsWith('rythm-shell-'))?.slice(12);
+  const { release } = await api('/api/app/latest').catch(() => ({ release: null }));
+  const line = (k: string, v: string) => h('span', { style: 'display:block;font-size:15px;line-height:1.35;font-weight:600' }, `${k}: ${v}`);
+  return nodes([apk ? line('Android ilova', apk) : null, line((navigator as unknown as Row).standalone === true ? 'iPhone ilova' : 'Sayt', shell || '—'), line('Oxirgi APK', release ? `${release.versionName} (${release.versionCode})` : '—')]);
+}
+
+async function flipTitle(title: HTMLElement): Promise<void> {
+  if (title.dataset.busy) return;
+  title.dataset.busy = '1';
+  try {
+    const next = title.dataset.back ? ['Admin panel'] : await versionLines();
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const turn = (from: number, to: number, ms: number, easing: string) => title.animate([{ transform: `perspective(600px) rotateX(${from}deg)` }, { transform: `perspective(600px) rotateX(${to}deg)` }], { duration: still ? 0 : ms, easing, fill: 'forwards' });
+    const out = turn(0, 90, 240, 'ease-in');
+    await out.finished;
+    title.replaceChildren(...next);
+    if (title.dataset.back) delete title.dataset.back; else title.dataset.back = '1';
+    const back = turn(-90, 0, 380, 'cubic-bezier(.2,1.3,.4,1)');
+    out.cancel();
+    await back.finished;
+    back.cancel();
+  } finally { delete title.dataset.busy; }
+}
+
 async function shrinkCover(file: File): Promise<Blob> {
   const img = await createImageBitmap(file).catch(() => null);
   if (!img) return file;
@@ -32,8 +109,8 @@ async function uploadImage(file?: File | null): Promise<string | null> {
   if (!file) return null;
   return (await api('/api/admin/images', { method: 'POST', raw: await shrinkCover(file) })).key;
 }
-// Listens to a chosen file and compares it with every song already on the platform. The file stays on this device.
-interface Check { map?: Uint8Array; fp?: Fingerprint; error?: string; match?: { title: string; artist: string; c: Comparison } }
+
+interface Check { map?: Uint8Array; fp?: Fingerprint; sound?: Sound; error?: string; match?: { id?: string; title: string; artist: string; c: Comparison } }
 async function checkFile(file: File, known: Row[]): Promise<Check> {
   if (!/\.wav$/i.test(file.name)) return { error: `${file.name}: faqat .wav fayl qabul qilinadi` };
   try {
@@ -43,9 +120,9 @@ async function checkFile(file: File, known: Row[]): Promise<Check> {
     const rank = { same: 2, similar: 1, different: 0 };
     for (const k of known) {
       const c = compare(fp, typeof k.fp === 'string' ? JSON.parse(k.fp) : k.fp);
-      if (c.level !== 'different' && (!match || rank[c.level] > rank[match.c.level] || (rank[c.level] === rank[match.c.level] && c.sound > match.c.sound))) match = { title: k.title, artist: k.artist, c };
+      if (c.level !== 'different' && (!match || rank[c.level] > rank[match.c.level] || (rank[c.level] === rank[match.c.level] && c.sound > match.c.sound))) match = { id: k.id, title: k.title, artist: k.artist, c };
     }
-    return { map, fp, match };
+    return { map, fp, sound: listen(map, fp), match };
   } catch (e) { return { error: `Faqat WAV qabul qilinadi: ${(e as Error).message}` }; }
 }
 const pct = (v: number): string => `${Math.round(v * 100)}%`;
@@ -56,7 +133,6 @@ const askDuplicate = (file: File, m: NonNullable<Check['match']>): Promise<boole
 });
 const uploadRhythm = (id: string, wav: Uint8Array) => api(`/api/admin/tracks/${id}/rhythm`, { method: "PUT", raw: analyzeWav(wav) as BodyInit });
 
-// Client check is only for fast feedback; the Worker re-validates on first part and on completion.
 async function uploadWav(file: File, kind: 'audio' | 'adaudio', onProgress?: (p: number) => void): Promise<Row> {
   if (!/\.wav$/i.test(file.name)) throw new Error(`${file.name}: faqat .wav fayl qabul qilinadi`);
   const start = await api('/api/admin/uploads', { method: 'POST', body: { kind } });
@@ -74,7 +150,7 @@ async function uploadWav(file: File, kind: 'audio' | 'adaudio', onProgress?: (p:
     onProgress?.(n / total);
   }
   const done = await api('/api/admin/uploads/complete', { method: 'POST', body: { key: start.key, uploadId: start.uploadId, parts } });
-  // Stored size must equal the source, or the song is not the file that was chosen.
+
   if (done.size !== file.size) throw new Error(`${file.name}: fayl to'liq yuklanmadi, qayta urinib ko'ring`);
   return done;
 }
@@ -116,40 +192,95 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
         h('button', { class: 'btn sm danger', onclick: () => confirmDelete(t) }, 'O\'chirish'))))));
   },
 
+  async find(el) {
+    const state = h('p', { class: 'muted' }, `Qo'shiq chalinayotgan joyda tugmani bosing. Ilova ${LISTEN_SECONDS} soniya tinglaydi va platformadagi qo'shiqlardan qidiradi.`);
+    const out = h('div', { class: 'stack' });
+    const btn = h('button', { class: 'btn pri', 'data-find': '1' }, 'Tinglash');
+    btn.onclick = async () => {
+      btn.disabled = true; out.replaceChildren();
+      try {
+        const wav = await recordSong(left => { state.textContent = `Tinglanmoqda… ${left}`; });
+        state.textContent = 'Qidirilmoqda…';
+        const sample = analyzeFull(wav).map;
+        const { tracks } = await api('/api/catalog');
+
+        const songs = (await Promise.all((tracks as Row[]).filter(t => t.rhythm).map(async t => {
+          const r = await fetch(t.rhythm).catch(() => null);
+          return r?.ok ? { id: t.id as string, map: new Uint8Array(await r.arrayBuffer()) } : null;
+        }))).filter(Boolean) as { id: string; map: Uint8Array }[];
+        const hits = rank(sample, songs), result = verdict(hits);
+        const t = (tracks as Row[]).find(x => x.id === hits[0]?.id);
+        if (result === 'none' || !t) { state.textContent = 'Bu qo\'shiq platformada topilmadi. Telefonni manbaga yaqinroq tutib, qayta urinib ko\'ring.'; return; }
+        state.textContent = result === 'found' ? 'Topildi' : 'Aniq emas, balki shu qo\'shiqdir. Yana bir marta tinglatib tekshiring.';
+        out.append(h('div', { class: 'item', 'data-found': result }, cover(t.cover, t.title), h('div', { class: 'body' }, h('div', { class: 'clip', style: 'font-weight:700' }, t.title), h('div', { class: 'clip small muted' }, `${t.artist} · ${fmt(hits[0].second)} atrofida`)), h('button', { class: 'btn sm', onclick: () => playList(tracks as never, (tracks as Row[]).indexOf(t)) }, 'Ochish')));
+      } catch (e) { state.textContent = (e as Error).message; } finally { btn.disabled = false; btn.textContent = 'Qayta tinglash'; }
+    };
+    el.append(h('section', { class: 'panel stack' }, h('h2', null, 'Qo\'shiqni topish'), state, btn, out));
+  },
   async upload(el) {
     const d = await api('/api/admin/tracks');
+    ownGenres = [...new Set((d.tracks as Row[]).map(t => t.genre as string).filter(Boolean))];
     const list = h('div', { class: 'stack' });
     const cov = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
-    const artist = h('input', { list: 'dl-artists', placeholder: 'Masalan: Sevara', required: true });
-    const album = h('input', { list: 'dl-albums', placeholder: 'Ixtiyoriy' });
-    const genre = h('input', { placeholder: 'Masalan: Pop' });
+    const artist = h('input', { list: 'dl-artists', value: 'SvRvS', required: true });
+    const album = h('input', { list: 'dl-albums', value: 'SvRvS rythm' });
     const year = h('input', { type: 'number', min: 1900, max: 2100, placeholder: String(new Date().getFullYear()), inputmode: 'numeric' });
     const lyrics = h('textarea', { placeholder: 'Qo\'shiq matni (ixtiyoriy)' });
     const files = h('input', { type: 'file', accept: '.wav,audio/wav,audio/x-wav', multiple: true, required: true });
-    const titleInput = h('input', { placeholder: 'Bo\'sh qolsa, fayl nomi olinadi' });
     const btn = h('button', { class: 'btn pri' }, 'Yuklash');
     const previews = h('div', { class: 'stack' });
     let urls: string[] = [];
     const checks = new Map<File, Promise<Check>>();
+    const named = new Map<File, { title: HTMLInputElement; genre: HTMLInputElement }>();
+    let refreshNames: (() => void)[] = [];
+    lyrics.addEventListener('input', () => { for (const f of refreshNames) f(); });
     const known = api('/api/admin/fingerprints').then(r => r.tracks as Row[]).catch(() => [] as Row[]);
+
+    previews.addEventListener('play', e => { for (const a of previews.querySelectorAll('audio')) if (a !== e.target) a.pause(); }, true);
     files.addEventListener('change', () => {
       urls.forEach(u => URL.revokeObjectURL(u));
       urls = [];
       checks.clear();
+      named.clear();
+      refreshNames = [];
       previews.replaceChildren(...[...files.files!].map(file => {
         const url = URL.createObjectURL(file);
         urls.push(url);
         const verdict = h('div', { class: 'verdict muted' }, 'Tovush tekshirilmoqda…');
+        const lookalike = h('div', { class: 'stack match-preview', style: 'gap:6px' });
         const check = known.then(k => checkFile(file, k));
         checks.set(file, check);
-        check.then(r => {
+        const base = file.name.replace(/\.wav$/i, '');
+        const title = h('input', { placeholder: 'Eshitilmoqda…', 'aria-label': 'Qo\'shiq nomi' }), genre = h('input', { placeholder: 'Eshitilmoqda…', 'aria-label': 'Janr' });
+        named.set(file, { title, genre });
+        let sound: Sound | null = null, seed = 0, others: string[] = [], guesses: string[] = [];
+        const taken = (): string[] => [...others, ...[...named.values()].filter(n => n.title !== title).map(n => n.title.value)];
+        const titleChips = chips(title, () => [...suggestTitles(sound, seed, taken(), files.files!.length === 1 ? lyrics.value : ''), base], t => matchNames(t, sound, taken()));
+        const genreChips = chips(genre, () => guesses, genreTyping);
+        const fill = (): void => { if (sound && !titleChips.edited()) title.value = suggestTitles(sound, seed, taken(), files.files!.length === 1 ? lyrics.value : '')[0] ?? base; titleChips.paint(); };
+        refreshNames.push(fill);
+        check.then(async r => {
+          if (r.map && r.fp && r.sound) {
+            const library = await known;
+            sound = r.sound; seed = r.map.length + r.map.reduce((a, v, i) => (i % 97 ? a : a + v), 0);
+            others = library.map(k => String(k.title));
+            guesses = guessGenres(r.sound, r.fp, library as { genre?: string; fp: Fingerprint | string }[]);
+            fill();
+            if (!genreChips.edited()) genre.value = guesses[0] ?? '';
+            genreChips.paint();
+          }
+          title.placeholder = base; genre.placeholder = 'Ixtiyoriy';
           if (r.error) { verdict.textContent = r.error; verdict.className = 'verdict same'; return; }
           if (!r.match) { verdict.textContent = 'Yangi qo\'shiq: platformada o\'xshashi yo\'q'; verdict.className = 'verdict ok'; return; }
           const same = r.match.c.level === 'same';
           verdict.textContent = `${same ? 'Bu qo\'shiq allaqachon bor' : 'O\'xshash qo\'shiq bor'}: "${r.match.title}" (${r.match.artist}), ${details(r.match.c)}`;
           verdict.className = `verdict ${same ? 'same' : 'similar'}`;
+
+          if (r.match.id) api('/api/play', { method: 'POST', body: { trackId: r.match.id, hidden: false } }).then(g => {
+            if (g.url) lookalike.replaceChildren(h('div', { class: 'small clip', style: 'font-weight:700' }, `${r.match!.title} · ${r.match!.artist}`), h('audio', { controls: true, preload: 'metadata', src: g.url, 'aria-label': `${r.match!.title} ni tinglash` }));
+          }).catch(() => { lookalike.textContent = 'Bu qo\'shiqni hozir eshitib bo\'lmaydi'; });
         });
-        return h('div', { class: 'preview' }, h('div', { class: 'small clip', style: 'font-weight:700' }, file.name), h('audio', { controls: true, preload: 'metadata', src: url, 'aria-label': `${file.name} ni tinglash` }), verdict);
+        return h('div', { class: 'preview' }, h('div', { class: 'small clip', style: 'font-weight:700' }, file.name), h('audio', { controls: true, preload: 'metadata', src: url, 'aria-label': `${file.name} ni tinglash` }), verdict, lookalike, field('Qo\'shiq nomi', title), titleChips.row, field('Janr (tovushdan taxmin)', genre), genreChips.row);
       }));
     });
     el.append(
@@ -172,17 +303,17 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
                 continue;
               }
               const up = await uploadWav(file, 'audio', p => { bar.style.width = `${p * 100}%`; });
-              const title = (files.files!.length === 1 && titleInput.value) || file.name.replace(/\.wav$/i, '');
-              const made = await api('/api/admin/tracks', { method: 'POST', body: { key: up.key, title, artist: artist.value, album: album.value, genre: genre.value, year: year.value || null, lyrics: lyrics.value, coverKey } });
-              // The song is already safe in R2; a failed map only means the visual falls back until it is rebuilt from Qo'shiqlar.
+              const title = named.get(file)?.title.value.trim() || file.name.replace(/\.wav$/i, ''), genre = named.get(file)?.genre.value.trim() ?? '';
+              const made = await api('/api/admin/tracks', { method: 'POST', body: { key: up.key, title, artist: artist.value, album: album.value, genre, year: year.value || null, lyrics: lyrics.value, coverKey } });
+
               await api(`/api/admin/tracks/${made.id}/rhythm`, { method: 'PUT', raw: check.map as BodyInit }).catch(() => toast('Ritm xaritasi tayyorlanmadi'));
               await api(`/api/admin/tracks/${made.id}/fingerprint`, { method: 'PUT', body: { fp: check.fp } }).catch(() => {});
-              (await known).push({ title, artist: artist.value, fp: check.fp }); // files in the same batch are compared too
+              (await known).push({ id: made.id, title, artist: artist.value, genre, fp: check.fp });
               status.textContent = `✓ ${title} · WAV ${up.bitDepth}-bit ${up.sampleRate} Hz · ${fmt(up.duration)}`;
             } catch (x) { status.textContent = `✕ ${file.name}: ${(x as Error).message}`; status.className = 'err'; }
           }
           toast('Yuklash tugadi');
-          // Only when every file made it; a failed one stays on screen with its reason.
+
           if (![...list.querySelectorAll('.err')].length && !skipped) { setTimeout(() => go('/'), 900); return; }
         } catch (x) { toast((x as Error).message); }
         btn.disabled = false;
@@ -191,7 +322,7 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
         h('p', { class: 'muted small' }, 'Faqat WAV (PCM) qabul qilinadi va R2 ga aynan shu holda saqlanadi. Sifat o\'zgarmaydi.'),
         field('WAV fayl(lar)', files),
         previews,
-        h('div', { class: 'two' }, field('Qo\'shiq nomi', titleInput), field('Ijrochi', artist), field('Albom', album), field('Janr', genre), field('Yil', year), field('Muqova rasmi', cov)),
+        h('div', { class: 'two' }, field('Ijrochi', artist), field('Albom', album), field('Yil', year), field('Muqova rasmi', cov)),
         field('Matn', lyrics),
         h('datalist', { id: 'dl-artists' }, d.artists.map((a: Row) => h('option', { value: a.name }))),
         h('datalist', { id: 'dl-albums' }, d.albums.map((a: Row) => h('option', { value: a.title }))),
@@ -360,7 +491,6 @@ const VIEWS: Record<string, (el: HTMLElement) => Promise<void>> = {
   },
 };
 
-// The one-button plan system switch.
 async function planSwitch() {
   const s = await api('/api/admin/settings');
   let on = s.plans_enabled === '1';
@@ -395,7 +525,8 @@ async function editTrack(id: string, d: Row): Promise<void> {
   sheet(close => {
     const title = h('input', { value: t.title }), artist = h('input', { value: t.artist, list: 'edit-artists' }), album = h('input', { value: t.album || '' }), genre = h('input', { value: t.genre }), lyrics = h('textarea', null), cov = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' }), promo = h('input', { value: t.promoText });
     lyrics.value = t.lyrics;
-    return [h('h2', null, 'Tahrirlash'), field('Nomi', title), field('Ijrochi', artist), h('datalist', { id: 'edit-artists' }, d.artists.map((a: Row) => h('option', { value: a.name }))), field('Albom', album), field('Janr', genre), field('Muqova', cov), field('Reklama matni', promo), field('Matn', lyrics),
+    const nameHints = chips(title, () => [], text => matchNames(text, null, [])), genreHints = chips(genre, () => [], genreTyping);
+    return [h('h2', null, 'Tahrirlash'), field('Nomi', title), nameHints.row, field('Ijrochi', artist), h('datalist', { id: 'edit-artists' }, d.artists.map((a: Row) => h('option', { value: a.name }))), field('Albom', album), field('Janr', genre), genreHints.row, field('Muqova', cov), field('Reklama matni', promo), field('Matn', lyrics),
       h('button', { class: 'btn pri', onclick: guard(async () => {
         const coverKey = cov.files?.[0] ? await uploadImage(cov.files[0]) : undefined;
         await api(`/api/admin/tracks/${id}`, { method: 'PATCH', body: { title: title.value, artist: artist.value, album: album.value, genre: genre.value, lyrics: lyrics.value, promoText: promo.value, coverKey } });
