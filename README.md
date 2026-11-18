@@ -3,6 +3,12 @@
 Music listening platform on Cloudflare Workers: lossless WAV catalogue, a browser
 listener app, an admin console for the catalogue, and Android and iOS clients.
 
+## Download
+
+Android builds are attached to the [releases](https://github.com/SvRvS3003/rythm/releases)
+page. Each release carries the signed APK and its SHA-256. The iOS app is built
+from source, see below.
+
 ## What it does
 
 - Catalogue of tracks, artists, albums and genres, stored in D1 with audio and
@@ -89,6 +95,19 @@ gitignored. Keep them: every future update must be signed with the same key.
 
 Open `ios/SvRvSRythm.xcodeproj`, set the host in the app settings, build to a
 device or simulator.
+
+## Package
+
+The source tree is also published to GitHub Packages as `@svrvs3003/rythm`, so a
+fork can pin it as a dependency of its own tooling:
+
+```sh
+npm login --scope=@svrvs3003 --registry=https://npm.pkg.github.com
+npm install @svrvs3003/rythm --registry=https://npm.pkg.github.com
+```
+
+Authentication is required by the registry even for public packages: a token with
+`read:packages` is enough.
 
 ## License
 
