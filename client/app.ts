@@ -25,6 +25,7 @@ if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'Mac
 
 const nav = navigator as Navigator & { audioSession?: { type: string; state?: string }; connection?: { saveData?: boolean }; standalone?: boolean };
 const win = window as unknown as Row;
+const installed = (): boolean => Boolean(win.RythmNative) || nav.standalone === true || /SvRvSRythmApp\//.test(navigator.userAgent);
 function fitScreen() {
   if (!nav.standalone) return;
   const portrait = matchMedia('(orientation: portrait)').matches;
@@ -1286,7 +1287,7 @@ const V: Record<string, View> = {
       h('p', { class: 'small dim' }, 'Pleyer animatsiyasi: "nebula", muallif ', h('a', { href: 'https://www.youtube.com/@yoniicat', target: '_blank', rel: 'noopener', style: 'text-decoration:underline' }, 'Firecat (@yoniicat)'), ', Vizzy.io loyihasi asosida.'),
       h('div', { class: 'row wrap' },
         u.role === 'admin' ? null : h('a', { class: 'btn', href: '/premium' }, 'Tariflar'),
-        h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
+        installed() ? null : h('a', { class: 'btn', href: '/install' }, 'Ilovani o\'rnatish'),
         u.role === 'admin' ? h('a', { class: 'btn pri', href: '/admin' }, 'Admin panel') : null,
         S.settings.supportUrl ? h('a', { class: 'btn', href: S.settings.supportUrl, target: '_blank', rel: 'noopener' }, 'Yordam') : null,
         h('button', { class: 'btn danger', onclick: guard(async () => { await api('/api/auth/logout', { method: 'POST' }); sw({ type: 'clear' }); offline.wipeDevice(); try { localStorage.removeItem('listening'); } catch {  } audio.pause(); P.track = null; S.user = null; go('/', true); render(); }) }, 'Chiqish'))]));
@@ -1319,6 +1320,7 @@ const V: Record<string, View> = {
       h('div', { class: 'row connect-go' }, h('button', { class: 'btn grow', onclick: answer(true) }, 'Rad etish'), h('button', { class: 'btn pri grow', onclick: answer(false) }, 'Ruxsat berish'))));
   },
   async install(el) {
+    if (installed()) { go('/', true); return; }
     const ua = navigator.userAgent, iOS = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1), android = /Android/.test(ua);
     const { release } = await api('/api/app/latest');
     const ios = h('div', { class: 'panel' }, h('h2', null, 'iPhone va iPad'),
@@ -1472,7 +1474,7 @@ function pageHead(img: string | null, title: string, sub: string, list?: Track[]
 const upsell = () => h('div', { class: 'upsell' }, h('div', { class: 'grow' }, h('h3', null, 'Reklamadan charchadingizmi?'), h('p', { class: 'small muted' }, 'Puls tarifi bilan uzluksiz tinglang.')), h('a', { class: 'btn pri sm', href: '/premium' }, 'Tarif olish'));
 
 const getApp = (): HTMLElement | null => {
-  if (win.RythmNative || nav.standalone) return null;
+  if (installed()) return null;
   const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const android = /Android/.test(navigator.userAgent);
 
@@ -1575,7 +1577,7 @@ function authView() {
       mode === 'login' ? null : h('label', { class: 'f' }, 'Ism', name),
       h('label', { class: 'f' }, 'Email', email), h('label', { class: 'f' }, 'Parol', pass), err, submit,
       h('button', { type: 'button', class: 'btn full', onclick: () => { mode = mode === 'login' ? 'register' : 'login'; draw(); } }, mode === 'login' ? 'Akkaunt yaratish' : 'Menda akkaunt bor'),
-      h('div', { class: 'auth-apps' }, h('p', { class: 'small muted' }, 'Ilovani akkauntsiz yuklab oling'),
+      installed() ? null : h('div', { class: 'auth-apps' }, h('p', { class: 'small muted' }, 'Ilovani akkauntsiz yuklab oling'),
         h('div', { class: 'row' },
           h('a', { class: 'btn sm grow', href: '/dl/ios.mobileconfig', download: '' }, 'iPhone'),
           h('a', { class: 'btn sm grow', href: '/dl/android', download: '' }, 'Android APK')),

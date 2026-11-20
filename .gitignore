@@ -12,3 +12,8 @@ dist/
 .playwright-mcp/
 .DS_Store
 webkit/
+build/
+*.ipa
+*.xcarchive
+*.xcresult
+ios/Config/Local.xcconfig

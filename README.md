@@ -5,9 +5,15 @@ listener app, an admin console for the catalogue, and Android and iOS clients.
 
 ## Download
 
-Android builds are attached to the [releases](https://github.com/SvRvS3003/rythm/releases)
-page. Each release carries the signed APK and its SHA-256. The iOS app is built
-from source, see below.
+Both clients are attached to the [releases](https://github.com/SvRvS3003/rythm/releases)
+page with their SHA-256:
+
+- `SvRvS-Rythm-<version>.apk`, signed with the release key, Android 8.0 or newer.
+- `SvRvS-Rythm-<version>-unsigned.ipa`, iOS 26 or newer, signed with your own
+  Apple ID before installing (Sideloadly, AltStore, ESign).
+
+The web client hides every install and download link once it runs inside an
+installed app, on the sign-in screen as well as in the pages behind it.
 
 ## What it does
 
@@ -93,8 +99,39 @@ gitignored. Keep them: every future update must be signed with the same key.
 
 ## iOS
 
-Open `ios/SvRvSRythm.xcodeproj`, set the host in the app settings, build to a
-device or simulator.
+The app needs iOS 26 or newer and Xcode 26. It is a native SwiftUI client, signed
+like any other iOS app.
+
+Signing lives in one place. `ios/Config/Signing.xcconfig` sets
+`CODE_SIGN_STYLE = Automatic` and reads the team from
+`RYTHM_DEVELOPMENT_TEAM`, so the project itself stays free of any account:
+
+```sh
+cp ios/Config/Signing.xcconfig ios/Config/Local.xcconfig
+```
+
+Put your team id in `ios/Config/Local.xcconfig`. That file is gitignored, so a
+fork never publishes someone else's team. In Xcode you can also pick the team
+under Signing & Capabilities; the bundle id `uz.svrvs.rythm.ios` has to be unique
+in your account, so change it if the id is taken.
+
+```sh
+zsh scripts/build-ios.sh signed      # archive and export, needs TEAM_ID
+METHOD=ad-hoc TEAM_ID=XXXXXXXXXX zsh scripts/build-ios.sh signed
+zsh scripts/build-ios.sh archive     # archive only, open it in Organizer
+zsh scripts/build-ios.sh unsigned    # device build without any certificate
+zsh scripts/build-ios.sh simulator   # simulator build
+```
+
+`signed` archives with automatic signing and lets Xcode create the profile from
+your account, then exports an IPA to `dist/`. `unsigned` compiles for a device
+with no certificate at all and writes
+`dist/SvRvS-Rythm-<version>-unsigned.ipa`: that is the file to hand to Sideloadly,
+AltStore or ESign, which sign it with your own Apple ID and install it over the
+cable or over Wi-Fi.
+
+The icon set is compiled by the script itself, so an unsigned build does not
+depend on a simulator runtime being installed.
 
 ## Package
 
