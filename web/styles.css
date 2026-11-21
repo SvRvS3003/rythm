@@ -297,7 +297,6 @@ html.ios .player .cover { border-radius: 16px; }
 .saver.busy { width: 168px; padding: 0 12px; background: #ffffff1a; animation: saverGrow .62s cubic-bezier(.22, 1.2, .3, 1) both; }
 .saver.busy::before { opacity: 1; }
 .saver.busy .saver-label, .saver.busy .saver-pct { display: block; animation: saverReveal .45s cubic-bezier(.2, .9, .3, 1.1) .1s both; }
-.saver.busy .saver-dl { animation: saverSpin 1.15s linear infinite; }
 .saver-label { display: none; font-size: 12px; font-weight: 800; }
 .saver-pct { display: none; margin-left: auto; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 1px 2px #0006; }
 .saver.done { width: 40px; padding: 0 11px; background: #4ade8026; color: var(--ok); opacity: 1; animation: saverSettle .35s cubic-bezier(.2, .9, .3, 1.2) both; }
@@ -309,9 +308,8 @@ html.ios .player .cover { border-radius: 16px; }
 .saver.note .saver-note { display: block; animation: saverReveal .4s cubic-bezier(.2, .9, .3, 1.1) .08s both; }
 .saver-note { display: none; font-size: 12px; font-weight: 800; }
 @keyframes saverOkOut { to { opacity: 0; transform: rotate(140deg) scale(.3); } }
-@keyframes saverIn { 0% { opacity: 0; transform: translateY(8px) scale(.35) rotate(-40deg); } 70% { opacity: 1; transform: translateY(-1px) scale(1.12) rotate(4deg); } 100% { opacity: 1; transform: none; } }
+@keyframes saverIn { 0% { opacity: 0; transform: translateY(8px) scale(.35); } 70% { opacity: 1; transform: translateY(-1px) scale(1.12); } 100% { opacity: 1; transform: none; } }
 @keyframes saverNote { 0% { opacity: 0; transform: translateX(-10px); } 100% { opacity: 1; transform: none; } }
-@keyframes saverSpin { to { transform: rotate(360deg); } }
 @keyframes saverDlOut { to { opacity: 0; transform: rotate(160deg) scale(.35); } }
 @keyframes saverCheck { 0% { opacity: 0; transform: rotate(-150deg) scale(.25); } 70% { opacity: 1; transform: rotate(8deg) scale(1.18); } 100% { opacity: 1; transform: none; } }
 @keyframes saverGrow { 0% { width: 40px; border-radius: 999px; } 45% { width: 182px; border-radius: 22px 999px 999px 22px; } 70% { width: 162px; border-radius: 999px; } 100% { width: 168px; border-radius: 999px; } }
