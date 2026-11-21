@@ -19,10 +19,8 @@ export async function refreshReady(): Promise<License | undefined> {
 
 export interface OfflineState {
   limit: number;
-  recentLimit?: number;
   validUntil: number;
-  items: { id: string; allowed: boolean; cover?: string | null; rhythm?: string | null }[];
-  recent?: { id: string; allowed?: boolean; cover?: string | null; rhythm?: string | null }[];
+  items: { id: string; allowed: boolean }[];
 }
 
 export async function syncLicense(user: string, state: OfflineState): Promise<void> {
@@ -39,33 +37,8 @@ export async function syncLicense(user: string, state: OfflineState): Promise<vo
   const before = [...ready].join();
   await refreshReady();
   if ([...ready].join() !== before) changed();
-  const missing = state.items.filter(i => i.allowed && !ready.has(i.id) && !active.has(i.id));
-  if (missing.length) void resume(missing);
 }
 
-/** Re-fetches everything the listener asked to keep offline, so a restart or a
- * fresh install restores the saved songs without anyone tapping download again. */
-function resume(items: { id: string; cover?: string | null; rhythm?: string | null }[]): Promise<void> {
-  queue = queue.catch(() => {}).then(async () => {
-    for (const t of items) {
-      if (ready.has(t.id) || active.has(t.id)) continue;
-      if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) continue;
-      if ((await get<OfflineRecord>('songs', t.id))?.done) continue;
-      try {
-        await download(t, async () => {
-          const res = await fetch(`/api/offline/${t.id}/url`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return (await res.json()).url as string;
-        });
-      } catch (e) {
-        if ((e as Error)?.name === 'QuotaExceededError') return;
-      }
-    }
-  });
-  return queue;
-}
-
-let queue: Promise<void> = Promise.resolve();
 export async function download(track: { id: string; cover?: string | null; rhythm?: string | null }, url: () => Promise<string>): Promise<void> {
   if (active.has(track.id) || ready.has(track.id)) return;
   active.set(track.id, 0); changed();
