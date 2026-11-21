@@ -607,16 +607,25 @@ function likeBtn(t: Track, cls = ''): HTMLButtonElement {
 function offlineSaver(t: Track): HTMLButtonElement {
   const pct = h('span', { class: 'saver-pct' }, '0%');
   const b = h('button', { type: 'button', class: 'saver', 'aria-label': 'Oflayn saqlash', title: 'Oflayn saqlash' },
-    h('span', { class: 'saver-ic saver-dl' }, icon('save', 18)),
-    h('span', { class: 'saver-ic saver-ok' }, icon('check', 18)),
-    h('span', { class: 'saver-label' }, 'Yuklanyabdi'), pct) as HTMLButtonElement;
-  let starting = false;
+    h('span', { class: 'saver-glyph' },
+      h('span', { class: 'saver-ic saver-dl' }, icon('save', 18)),
+      h('span', { class: 'saver-ic saver-ok' }, icon('check', 18))),
+    h('span', { class: 'saver-label' }, 'Yuklanyabdi'), pct,
+    h('span', { class: 'saver-note' }, "Yuklanib bo'lgan")) as HTMLButtonElement;
+  let starting = false, prev = '', noting = false, hold: ReturnType<typeof setTimeout> | undefined;
   const paint = (): void => {
     const done = offline.ready.has(t.id), p = offline.active.get(t.id), busy = p !== undefined || starting;
-    const label = done ? 'Oflayn saqlangan' : busy ? `Yuklanyabdi ${Math.round((p ?? 0) * 100)}%` : 'Oflayn saqlash';
-    b.classList.toggle('done', done);
-    b.classList.toggle('busy', busy && !done);
-    b.disabled = done;
+    const state = noting && done ? 'note' : done ? 'done' : busy ? 'busy' : 'idle';
+    const label = state === 'note' ? "Yuklanib bo'lgan" : done ? 'Oflayn saqlangan' : busy ? `Yuklanyabdi ${Math.round((p ?? 0) * 100)}%` : 'Oflayn saqlash';
+    b.classList.toggle('done', state === 'done' || state === 'note');
+    b.classList.toggle('busy', state === 'busy');
+    b.classList.toggle('note', state === 'note');
+    if ((prev === 'busy' || prev === 'note') && state === 'done') {
+      b.classList.add('just-done');
+      setTimeout(() => b.classList.remove('just-done'), 700);
+    }
+    prev = state;
+    b.disabled = false;
     b.style.setProperty('--p', String(done ? 1 : p ?? 0));
     pct.textContent = `${Math.round((p ?? 0) * 100)}%`;
     b.setAttribute('aria-label', label);
@@ -624,10 +633,15 @@ function offlineSaver(t: Track): HTMLButtonElement {
   };
   const stop = offline.onChange(() => { if (!b.isConnected) { stop(); return; } paint(); });
   b.onclick = guard(async () => {
-    if (offline.ready.has(t.id)) return;
+    if (offline.ready.has(t.id)) {
+      if (noting) return;
+      noting = true; paint();
+      hold = setTimeout(() => { noting = false; if (b.isConnected) paint(); }, 1600);
+      return;
+    }
     if (!navigator.onLine) throw new Error("Internet yo'q. Oflayn saqlash uchun internet kerak.");
     starting = true; paint();
-    try { await saveOffline(t); } finally { starting = false; paint(); }
+    try { await saveOffline(t); } finally { starting = false; if (b.isConnected) paint(); }
   });
   paint();
   return b;
@@ -885,12 +899,23 @@ function setQueue(open: boolean, animate = true): void {
   for (const b of ui.now?.querySelectorAll('button[aria-label="Navbat"]') || []) b.classList.toggle('on', open);
   if (!open) setTimeout(() => { if (!sheetState.open && sheetState.p === 0) ui.now?.classList.remove('q-shown'); }, animate ? 420 : 0);
 }
+let dragBusy = false;
 function attachSwipe(now: HTMLElement): void {
-  let d: { x0: number; y0: number; p0: number; on: boolean; inList: boolean; y: number; t: number; v: number; dismiss: boolean } | null = null;
-  let swallowClick = 0;
+  let d: { x0: number; y0: number; p0: number; on: boolean; inList: boolean; y: number; t: number; v: number; dismiss: boolean; h: number; qh: number; dy: number } | null = null;
+  let swallowClick = 0, raf = 0, pending: (() => void) | null = null;
+  // Coalesce every pointer report into one write per display frame: 60 Hz panels
+  // get 60, 120 Hz panels get 120, and a slow phone never queues a backlog.
+  const schedule = (fn: () => void): void => {
+    pending = fn;
+    if (raf) return;
+    raf = requestAnimationFrame(() => { raf = 0; const f = pending; pending = null; f?.(); });
+  };
+  const flush = (): void => { if (raf) cancelAnimationFrame(raf); raf = 0; pending = null; };
   const begin = (x: number, y: number, target: EventTarget | null) => {
     const el = target as Element;
-    d = el.closest?.('input[type=range]') || P.ad ? null : { x0: x, y0: y, p0: sheetState.p, on: false, inList: !!el.closest?.('.queue'), y, t: performance.now(), v: 0, dismiss: false };
+    d = el.closest?.('input[type=range]') || P.ad ? null
+      : { x0: x, y0: y, p0: sheetState.p, on: false, inList: !!el.closest?.('.queue'), y, t: performance.now(), v: 0, dismiss: false, h: innerHeight, qh: 0, dy: 0 };
+    dragBusy = !!d;
   };
   const move = (x: number, y: number, e: Event) => {
     if (!d) return;
@@ -907,27 +932,49 @@ function attachSwipe(now: HTMLElement): void {
     if (e.cancelable) e.preventDefault();
     const t = performance.now();
     d.v = (y - d.y) / Math.max(1, t - d.t);
-    d.y = y; d.t = t;
-    if (d.dismiss) now.style.setProperty('--d', Math.max(0, dy / innerHeight).toFixed(4));
-    else paintSheet(Math.min(1, Math.max(0, d.p0 - dy / queueSheet.offsetHeight)), false);
+    d.y = y; d.t = t; d.dy = dy;
+    if (d.dismiss) {
+      const ratio = Math.max(0, dy / d.h);
+      schedule(() => now.style.setProperty('--d', ratio.toFixed(4)));
+    } else {
+      const p = Math.min(1, Math.max(0, d.p0 - dy / (d.qh || (d.qh = queueSheet.offsetHeight))));
+      schedule(() => paintSheet(p, false));
+    }
   };
   const end = () => {
     const g = d;
     d = null;
-    if (!g?.on) return;
+    flush();
+    if (!g?.on) { dragBusy = false; return; }
     swallowClick = performance.now();
 
     if (g.dismiss) {
-      if (g.v > 0.35 || Number(now.style.getPropertyValue('--d')) > 0.28) dismissNow();
-      else { now.classList.add('d-anim'); now.style.setProperty('--d', '0'); }
+      now.style.setProperty('--d', Math.max(0, g.dy / g.h).toFixed(4));
+      if (g.v > 0.35 || g.dy > g.h * 0.28) dismissNow();
+      else {
+        now.classList.add('d-anim');
+        now.style.setProperty('--d', '0');
+        startBackdrop();
+        setTimeout(() => { if (now.style.getPropertyValue('--d') === '0') dragBusy = false; }, 340);
+      }
       return;
     }
-    setQueue(g.v < -0.35 ? true : g.v > 0.35 ? false : sheetState.p > 0.4);
+    setQueue(g.v < -0.35 ? true : g.v > 0.35 ? false : Math.min(1, Math.max(0, g.p0 - g.dy / (g.qh || queueSheet.offsetHeight))) > 0.4);
+    dragBusy = false;
   };
   now.addEventListener('touchstart', e => begin(e.touches[0].clientX, e.touches[0].clientY, e.target), { passive: true });
   now.addEventListener('touchmove', e => move(e.touches[0].clientX, e.touches[0].clientY, e), { passive: false });
   now.addEventListener('touchend', end);
-  now.addEventListener('touchcancel', () => { const was = sheetState.open; d = null; setQueue(was); now.classList.add('d-anim'); now.style.setProperty('--d', '0'); });
+  now.addEventListener('touchcancel', () => {
+    flush();
+    const was = sheetState.open;
+    d = null;
+    setQueue(was);
+    now.classList.add('d-anim');
+    now.style.setProperty('--d', '0');
+    startBackdrop();
+    setTimeout(() => { if (now.style.getPropertyValue('--d') === '0') dragBusy = false; }, 340);
+  });
   now.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' && e.button === 0) begin(e.clientX, e.clientY, e.target); });
   addEventListener('pointermove', e => { if (e.pointerType === 'mouse') move(e.clientX, e.clientY, e); });
   addEventListener('pointerup', e => { if (e.pointerType === 'mouse') end(); });
@@ -951,7 +998,7 @@ function startBackdrop(): void {
       nebulaCanvas.replaceWith(fresh);
       nebulaCanvas = fresh;
       if (!document.hidden) startBackdrop();
-    });
+    }, () => dragBusy);
   }).catch(() => {});
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && ui.now?.classList.contains('show')) startBackdrop(); });
@@ -976,6 +1023,7 @@ function dismissNow(): void {
 function closeNow() {
   setQueue(false, false);
   ui.now?.classList.remove('show');
+  dragBusy = false;
   stopNebula?.();
   stopNebula = null;
 }
@@ -1005,7 +1053,7 @@ function renderNow(mode?: string): void {
   if (moved) left.classList.add(`swipe-${swipe}`);
   else if (ui.now.classList.contains('show')) left.classList.add('mode-in');
   seekCanvas ??= h('canvas', { class: 'tide', 'aria-hidden': 'true' }) as HTMLCanvasElement;
-  seekTide ??= startTide(seekCanvas, sounding, readRhythm, () => !ui.now?.classList.contains('show'), 3);
+  seekTide ??= startTide(seekCanvas, sounding, readRhythm, () => !ui.now?.classList.contains('show') || dragBusy, 3);
   seekTide.song(t.cover, hue(t.title) / 360);
   ui.now.replaceChildren(queueSheet, nebulaCanvas, h('div', { class: 'now-in' },
     h('div', { class: 'top' },

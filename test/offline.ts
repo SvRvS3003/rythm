@@ -45,7 +45,14 @@ try {
   const isDone = () => p.evaluate(async i => { const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); }); const s: any = await new Promise(r => { const g = d.transaction('songs').objectStore('songs').get(i); g.onsuccess = () => r(g.result); }); return s?.done === true; }, id).catch(() => false);
   for (let n = 0; n < 180 && !(await isDone()); n++) await p.waitForTimeout(500);
   assert.equal(await isDone(), true, 'download did not finish');
-  console.log('  ok saved from the player');
+  await p.locator('.now .saver.done').waitFor({ timeout: 10000 });
+  await p.locator('.now .saver.done').click();
+  await p.locator('.now .saver.note').waitFor({ timeout: 3000 });
+  assert.equal(await p.locator('.now .saver.note .saver-note').textContent(), "Yuklanib bo'lgan");
+  await p.waitForTimeout(2200);
+  assert.equal(await p.locator('.now .saver.note').count(), 0);
+  assert.equal(await p.locator('.now .saver.done').count(), 1);
+  console.log('  ok saved from the player; the check opens the saved pill and folds back');
 
   const inside = await p.evaluate(async i => {
     const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); });

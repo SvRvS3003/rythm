@@ -92,6 +92,7 @@ export type Tide = { paint: (progress: number) => void; song: (cover: string | n
 export function startTide(canvas: HTMLCanvasElement, sounding: () => boolean, readRhythm: (bins: Uint8Array) => number | null, busy: () => boolean, zoom = 1): Tide {
   const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, powerPreference: 'low-power' });
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const light = (navigator.hardwareConcurrency || 8) <= 4 || ((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 8) <= 4;
   const bins = new Uint8Array(16);
   let uni: Record<string, WebGLUniformLocation | null> = {};
   const build = (): void => {
@@ -128,7 +129,7 @@ export function startTide(canvas: HTMLCanvasElement, sounding: () => boolean, re
     if (now - last < 32) { raf = requestAnimationFrame(frame); return; }
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = Math.min(devicePixelRatio || 1, light ? 1.5 : 2);
     const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); }
     const playing = !still && sounding();

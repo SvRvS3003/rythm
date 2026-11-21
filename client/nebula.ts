@@ -70,7 +70,7 @@ function target(gl: WebGLRenderingContext, size: number) {
   return { tex, fb };
 }
 
-export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean, readRhythm: (bins: Uint8Array) => number | null, onLost: () => void): (() => void) | null {
+export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean, readRhythm: (bins: Uint8Array) => number | null, onLost: () => void, paused?: () => boolean): (() => void) | null {
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, powerPreference: 'low-power' });
   if (!gl) return null;
   let feed, final;
@@ -87,10 +87,12 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  let raf = 0, last = 0, level = 0, stopped = false, hit = 0, quality = 1, slow = 0, t = 0, idle = 0;
+  const light = (navigator.hardwareConcurrency || 8) <= 4 || ((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 8) <= 4;
+  let raf = 0, last = 0, level = 0, stopped = false, hit = 0, quality = light ? 0.75 : 1, slow = 0, t = 0, idle = 0;
   const frame = (now: number): void => {
     if (stopped) return;
     raf = requestAnimationFrame(frame);
+    if (paused?.()) { last = now; return; }
     if (now - last < 32) return;
     const raw = now - last;
     const dtFrame = Math.min(100, raw);
@@ -106,7 +108,7 @@ export function startNebula(canvas: HTMLCanvasElement, isPlaying: () => boolean,
 
     slow = raw > 48 ? slow + 1 : Math.max(0, slow - 1);
     if (slow > 20 && quality > 0.5) { quality -= 0.125; slow = 0; }
-    const dpr = Math.min(devicePixelRatio || 1, 3);
+    const dpr = Math.min(devicePixelRatio || 1, light ? 2 : 3);
     const scale = dpr * quality * Math.min(1, 1600 / (Math.max(innerWidth, innerHeight) * dpr));
     const w = Math.round(innerWidth * scale), h = Math.round(innerHeight * scale);
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }

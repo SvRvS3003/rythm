@@ -28,20 +28,17 @@ export interface OfflineState {
 export async function syncLicense(user: string, state: OfflineState): Promise<void> {
   const prev = await get<License>('meta', 'license');
   if (prev && prev.user !== user) await wipeAll();
-  const recent = state.recent ?? [];
-  const auto = recent.filter(r => r.allowed !== false).map(r => r.id);
   await put('meta', 'license', {
     user, limit: state.limit,
     allowed: state.items.filter(i => i.allowed).map(i => i.id),
-    auto, validUntil: state.validUntil * 1000,
+    validUntil: state.validUntil * 1000,
     seenAt: Math.max(Date.now(), prev?.user === user ? prev.seenAt : 0),
   } satisfies License);
-  const listed = new Set([...state.items.map(i => i.id), ...recent.map(r => r.id)]);
+  const listed = new Set(state.items.map(i => i.id));
   for (const s of await all<OfflineRecord>('songs')) if (!listed.has(s.id) && !active.has(s.id)) await removeSong(s.id);
   const before = [...ready].join();
   await refreshReady();
   if ([...ready].join() !== before) changed();
-  if (auto.length) void cacheRecent(recent.filter(r => r.allowed !== false));
   const missing = state.items.filter(i => i.allowed && !ready.has(i.id) && !active.has(i.id));
   if (missing.length) void resume(missing);
 }
@@ -69,26 +66,6 @@ function resume(items: { id: string; cover?: string | null; rhythm?: string | nu
 }
 
 let queue: Promise<void> = Promise.resolve();
-function cacheRecent(recent: { id: string; cover?: string | null; rhythm?: string | null }[]): Promise<void> {
-  queue = queue.catch(() => {}).then(async () => {
-    for (const t of recent) {
-      if (ready.has(t.id) || active.has(t.id)) continue;
-      if ((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData) continue;
-      const rec = await get<OfflineRecord>('songs', t.id);
-      if (rec?.done) continue;
-      try {
-        await download(t, async () => {
-          const res = await fetch(`/api/offline/${t.id}/url`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return (await res.json()).url as string;
-        });
-      } catch (e) {
-        if ((e as Error)?.name === 'QuotaExceededError') return;
-      }
-    }
-  });
-  return queue;
-}
 export async function download(track: { id: string; cover?: string | null; rhythm?: string | null }, url: () => Promise<string>): Promise<void> {
   if (active.has(track.id) || ready.has(track.id)) return;
   active.set(track.id, 0); changed();
