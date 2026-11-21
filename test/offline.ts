@@ -38,13 +38,14 @@ try {
   await p.goto(BASE + '/search'); await p.waitForSelector('.list .tr'); await p.waitForTimeout(800);
   await p.reload(); await p.waitForSelector('.list .tr');
   await p.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 15000 });
-  await p.locator(`.tr[data-id="${id}"] button[aria-label="Pleylistga qo'shish"]`).first().click();
+  await p.locator(`.tr[data-id="${id}"] .hit`).first().click();
+  await p.locator('#player.show button[aria-label="To\'liq pleyerni ochish"]').click();
   await p.getByRole('button', { name: 'Oflayn saqlash' }).click();
 
   const isDone = () => p.evaluate(async i => { const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); }); const s: any = await new Promise(r => { const g = d.transaction('songs').objectStore('songs').get(i); g.onsuccess = () => r(g.result); }); return s?.done === true; }, id).catch(() => false);
   for (let n = 0; n < 180 && !(await isDone()); n++) await p.waitForTimeout(500);
   assert.equal(await isDone(), true, 'download did not finish');
-  console.log('  ok saved through the + menu');
+  console.log('  ok saved from the player');
 
   const inside = await p.evaluate(async i => {
     const d: IDBDatabase = await new Promise(r => { const o = indexedDB.open('rythm-offline', 1); o.onsuccess = () => r(o.result); });

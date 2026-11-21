@@ -91,7 +91,7 @@ a real browser. `zsh scripts/ci.sh` runs the whole gate.
 ## Android
 
 ```sh
-zsh scripts/build-apk.sh https://your.host 7 1.0.7
+zsh scripts/build-apk.sh https://your.host 8 1.0.8
 ```
 
 The release keystore and `keystore.properties` are generated on first run and are

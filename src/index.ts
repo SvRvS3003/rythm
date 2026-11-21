@@ -519,7 +519,7 @@ route('POST', '/api/ads/:view/click', async (req, env, { user, params }) => {
   return json({ ok: true });
 });
 
-const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort, offlineLimit: p.offline_limit });
+const mapPlan = (p: Row) => ({ id: p.id, name: p.name, tagline: p.tagline, price: p.price_uzs, days: p.days, seats: p.seats, features: p.features.split('\n').filter(Boolean), active: !!p.active, sort: p.sort, offlineLimit: p.offline_limit, offlineRecent: p.offline_recent });
 
 route('GET', '/api/plans', async (req, env, { user }) => {
   const s = await settings(env);
@@ -614,22 +614,27 @@ route('DELETE', '/api/family/:id', async (req, env, { user, params }) => {
 });
 
 const OFFLINE_FOREVER = 3650 * DAY;
-async function offlineAccess(env: Env, user: Row): Promise<{ limit: number; until: number }> {
-  if (user.role === 'admin') return { limit: -1, until: now() + OFFLINE_FOREVER };
+const RECENT_PLAYS = `JOIN (SELECT track_id, MAX(started_at) m, MAX(rowid) r FROM plays WHERE user_id=? GROUP BY track_id ORDER BY m DESC, r DESC LIMIT ?) rec ON rec.track_id=t.id`;
+async function offlineAccess(env: Env, user: Row): Promise<{ limit: number; recent: number; until: number }> {
+  if (user.role === 'admin') return { limit: -1, recent: 20, until: now() + OFFLINE_FOREVER };
   const e = await entitlement(env, user, await liveSettings(env));
   if (e.reason !== 'plan' && e.reason !== 'family') {
 
-    if (user.plan_expires <= now()) return { limit: 0, until: 0 };
-    return { limit: (await one(env, 'SELECT offline_limit l FROM plans WHERE id=?', user.plan_id))?.l ?? 0, until: user.plan_expires };
+    if (user.plan_expires <= now()) return { limit: 0, recent: 0, until: 0 };
+    const p = await first(env, 'SELECT offline_limit,offline_recent FROM plans WHERE id=?', user.plan_id);
+    return { limit: p?.offline_limit ?? 0, recent: p?.offline_recent ?? 0, until: user.plan_expires };
   }
-  const plan = await first(env, 'SELECT offline_limit FROM plans WHERE id=?', e.planId);
-  return { limit: plan?.offline_limit ?? 0, until: e.expires ?? 0 };
+  const plan = await first(env, 'SELECT offline_limit,offline_recent FROM plans WHERE id=?', e.planId);
+  return { limit: plan?.offline_limit ?? 0, recent: plan?.offline_recent ?? 0, until: e.expires ?? 0 };
 }
 route('GET', '/api/offline', async (req, env, { user }) => {
   const a = await offlineAccess(env, user);
   const list = await tracks(env, 'JOIN offline_items o ON o.track_id=t.id WHERE o.user_id=? AND t.published=1 ORDER BY o.position,o.added_at', user.id);
+  const recent = a.recent > 0 ? await tracks(env, `${RECENT_PLAYS} WHERE t.published=1 ORDER BY rec.m DESC,rec.r DESC`, user.id, a.recent) : [];
 
-  return json({ limit: a.limit, validUntil: a.until, items: list.map((t, i) => ({ ...t, allowed: a.limit === -1 || i < a.limit })) });
+  return json({ limit: a.limit, recentLimit: a.recent, validUntil: a.until,
+    items: list.map((t, i) => ({ ...t, allowed: a.limit === -1 || i < a.limit })),
+    recent: recent.map(t => ({ ...t, allowed: a.until > 0 })) });
 });
 route('POST', '/api/offline', async (req, env, { user }) => {
   const a = await offlineAccess(env, user);
@@ -654,9 +659,12 @@ route('DELETE', '/api/offline/:id', async (req, env, { user, params }) => {
 });
 route('GET', '/api/offline/:id/url', async (req, env, { user, params }) => {
   const a = await offlineAccess(env, user);
-  if (a.limit === 0) return fail(403, 'Oflayn tinglash tarifingizga kirmaydi');
-  const row = await first(env, 'SELECT o.track_id,t.duration FROM offline_items o JOIN tracks t ON t.id=o.track_id WHERE o.user_id=? AND o.track_id=?', user.id, params.id);
-  if (!row) return fail(404, 'Avval qo\'shiqni oflayn ro\'yxatga qo\'shing');
+  if (a.limit === 0 && a.recent === 0) return fail(403, 'Oflayn tinglash tarifingizga kirmaydi');
+  if (!await first(env, 'SELECT id FROM tracks WHERE id=? AND published=1', params.id)) return fail(404, 'Qo\'shiq topilmadi');
+  const manual = a.limit !== 0 && await first(env, 'SELECT track_id FROM offline_items WHERE user_id=? AND track_id=?', user.id, params.id);
+  const recent = manual || a.recent === 0 ? null
+    : await first(env, `SELECT track_id FROM (SELECT track_id, MAX(started_at) m, MAX(rowid) r FROM plays WHERE user_id=? GROUP BY track_id ORDER BY m DESC, r DESC LIMIT ?) WHERE track_id=?`, user.id, a.recent, params.id);
+  if (!manual && !recent) return fail(404, 'Bu qo\'shiq oflayn ro\'yxatida yo\'q');
   const exp = now() + 6 * 3600;
   return json({ url: `/media/stream/${params.id}?u=${user.id}&e=${exp}&s=${await streamSig(env, params.id, user.id, exp)}` });
 });
@@ -1028,9 +1036,9 @@ route('POST', '/api/admin/plans', async (req, env) => {
   const id = b.id ? str(b.id, 40) : uid();
   const name = str(b.name, 40);
   if (!name) return fail(400, 'Tarif nomini kiriting');
-  await run(env, `INSERT INTO plans (id,name,tagline,price_uzs,days,seats,features,active,sort,offline_limit) VALUES (?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET offline_limit=excluded.offline_limit,name=excluded.name,tagline=excluded.tagline,price_uzs=excluded.price_uzs,days=excluded.days,seats=excluded.seats,features=excluded.features,active=excluded.active,sort=excluded.sort`,
-    id, name, str(b.tagline, 120), int(b.price, 0, 100000000, 'Narx'), int(b.days ?? 30, 1, 3660, 'Muddat'), int(b.seats ?? 1, 1, 20, "Joylar soni"), str(b.features, 1000), b.active === false ? 0 : 1, int(b.sort ?? 0, 0, 1000, 'Tartib'), int(b.offlineLimit ?? 0, -1, 100000, 'Oflayn limit'));
+  await run(env, `INSERT INTO plans (id,name,tagline,price_uzs,days,seats,features,active,sort,offline_limit,offline_recent) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET offline_limit=excluded.offline_limit,offline_recent=excluded.offline_recent,name=excluded.name,tagline=excluded.tagline,price_uzs=excluded.price_uzs,days=excluded.days,seats=excluded.seats,features=excluded.features,active=excluded.active,sort=excluded.sort`,
+    id, name, str(b.tagline, 120), int(b.price, 0, 100000000, 'Narx'), int(b.days ?? 30, 1, 3660, 'Muddat'), int(b.seats ?? 1, 1, 20, "Joylar soni"), str(b.features, 1000), b.active === false ? 0 : 1, int(b.sort ?? 0, 0, 1000, 'Tartib'), int(b.offlineLimit ?? 0, -1, 100000, 'Oflayn limit'), int(b.offlineRecent ?? 0, 0, 1000, 'Oxirgi qo\'shiqlar soni'));
   return json({ id });
 }, 'admin');
 

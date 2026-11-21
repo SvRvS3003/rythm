@@ -44,7 +44,7 @@ const I: Record<string, string> = { offline: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-1
   repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
   save: 'M12 3v12M7 10l5 5 5-5M4 20h16',
   repeat1: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3M11 10.500l1.500-1v5',
-  heart: 'M12 20.500S3.500 15.500 3.500 9A4.500 4.500 0 0 1 12 7a4.500 4.500 0 0 1 8.500 2c0 6.500-8.500 11.500-8.500 11.500z', plus: 'M12 5v14M5 12h14', down: 'M6 9l6 6 6-6', x: 'M6 6l12 12M18 6L6 18',
+  heart: 'M12 20.500S3.500 15.500 3.500 9A4.500 4.500 0 0 1 12 7a4.500 4.500 0 0 1 8.500 2c0 6.500-8.500 11.500-8.500 11.500z', plus: 'M12 5v14M5 12h14', down: 'M6 9l6 6 6-6', x: 'M6 6l12 12M18 6L6 18', check: 'M4.5 12.5 9.5 17.5 20 7',
   vol: 'M4 9.500v5h3.500L12 18.500v-13L7.500 9.500zM16 9a4 4 0 0 1 0 6M18.500 6.500a8 8 0 0 1 0 11', mute: 'M4 9.500v5h3.500L12 18.500v-13L7.500 9.500zM16.5 10l4.5 4.5M21 10l-4.5 4.5', text: 'M4 6h16M4 12h16M4 18h10', queue: 'M4 6h12M4 12h12M4 18h7M20 6v10.500a2.500 2.500 0 1 1-2-2.450', trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14',
 };
 const SOLID = new Set(['heartfull', 'play', 'pause', 'next', 'prev']);
@@ -604,6 +604,35 @@ function likeBtn(t: Track, cls = ''): HTMLButtonElement {
   b.setAttribute('aria-pressed', String(S.liked.has(t.id)));
   return b;
 }
+function offlineSaver(t: Track): HTMLButtonElement {
+  const pct = h('span', { class: 'saver-pct' }, '0%');
+  const b = h('button', { type: 'button', class: 'saver', 'aria-label': 'Oflayn saqlash', title: 'Oflayn saqlash' },
+    h('span', { class: 'saver-ic saver-dl' }, icon('save', 18)),
+    h('span', { class: 'saver-ic saver-ok' }, icon('check', 18)),
+    h('span', { class: 'saver-label' }, 'Yuklanyabdi'), pct) as HTMLButtonElement;
+  let starting = false;
+  const paint = (): void => {
+    const done = offline.ready.has(t.id), p = offline.active.get(t.id), busy = p !== undefined || starting;
+    const label = done ? 'Oflayn saqlangan' : busy ? `Yuklanyabdi ${Math.round((p ?? 0) * 100)}%` : 'Oflayn saqlash';
+    b.classList.toggle('done', done);
+    b.classList.toggle('busy', busy && !done);
+    b.disabled = done;
+    b.style.setProperty('--p', String(done ? 1 : p ?? 0));
+    pct.textContent = `${Math.round((p ?? 0) * 100)}%`;
+    b.setAttribute('aria-label', label);
+    b.title = label;
+  };
+  const stop = offline.onChange(() => { if (!b.isConnected) { stop(); return; } paint(); });
+  b.onclick = guard(async () => {
+    if (offline.ready.has(t.id)) return;
+    if (!navigator.onLine) throw new Error("Internet yo'q. Oflayn saqlash uchun internet kerak.");
+    starting = true; paint();
+    try { await saveOffline(t); } finally { starting = false; paint(); }
+  });
+  paint();
+  return b;
+}
+
 function playerBar() {
   const el = h('div', { class: 'player', id: 'player' });
   ui.player = el;
@@ -987,6 +1016,7 @@ function renderNow(mode?: string): void {
     h('div', { class: 'pane' },
       h('div', { class: `row between now-title ${moved ? `swipe-${swipe}` : ''}` },
         h('div', { class: 'grow' }, h('h2', { class: 'clip' }, t.title), h('a', { class: 'muted clip', style: 'display:block', href: `/artist/${t.artistId}` }, t.artist)),
+        offlineSaver(t),
         likeBtn(t)),
       h('span', { class: 'quality' }, quality(t)),
       h('div', null, h('div', { class: 'water-seek' }, seekCanvas, seekBar()), h('div', { class: 'row between' }, h('span', { class: 'time', 'data-cur': '1' }, '0:00'), h('span', { class: 'time', 'data-dur': '1' }, '0:00'))),
@@ -1102,7 +1132,6 @@ function addToPlaylist(t: Track): void {
   sheet(close => {
     const name = h('input', { placeholder: 'Yangi pleylist nomi', 'aria-label': 'Yangi pleylist nomi' });
     return [h('h2', null, 'Pleylistga qo\'shish'), h('p', { class: 'muted small clip' }, t.title),
-      h('button', { class: 'btn full light', onclick: () => saveOffline(t, close) }, offline.ready.has(t.id) ? 'Oflayn saqlangan' : 'Oflayn saqlash'),
       S.playlists.map((p: Row) => h('button', { class: 'btn full', onclick: guard(async () => { await api(`/api/playlists/${p.id}/tracks`, { method: 'POST', body: { trackId: t.id } }); close(); toast(`"${p.name}" ga qo'shildi`); }) }, h('span', { class: 'clip' }, p.name))),
       h('form', { class: 'row', onsubmit: guard(async (e: Event) => {
         e.preventDefault();
@@ -1340,15 +1369,10 @@ const refreshOffline = async (): Promise<void> => {
   const state = await api('/api/offline').catch(() => null);
   if (state) await offline.syncLicense(S.user.id, state as never).catch(() => {});
 };
-function saveOffline(t: Track, close: () => void): void {
-  close();
-  guard(async () => {
-    await api('/api/offline', { method: 'POST', body: { trackId: t.id } });
-    toast('Qo\'shiq saqlanmoqda…');
-    await refreshOffline();
-    await offline.download(t, async () => (await api(`/api/offline/${t.id}/url`)).url);
-    toast(`"${t.title}" oflayn tayyor`);
-  })();
+async function saveOffline(t: Track): Promise<void> {
+  await api('/api/offline', { method: 'POST', body: { trackId: t.id } });
+  await refreshOffline();
+  await offline.download(t, async () => (await api(`/api/offline/${t.id}/url`)).url);
 }
 V.offline = async el => {
   const online = navigator.onLine;

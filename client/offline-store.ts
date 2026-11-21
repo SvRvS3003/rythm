@@ -1,6 +1,6 @@
 export const CHUNK = 1 << 20;
 export interface OfflineRecord { id: string; track: Record<string, unknown>; size: number; have: number; done: boolean }
-export interface License { user: string; limit: number; allowed: string[]; validUntil: number; seenAt: number }
+export interface License { user: string; limit: number; allowed: string[]; auto?: string[]; validUntil: number; seenAt: number }
 
 let opening: Promise<IDBDatabase> | null = null;
 export function db(): Promise<IDBDatabase> {
@@ -61,5 +61,5 @@ export async function openChunk(key: CryptoKey, id: string, n: number): Promise<
 }
 
 export function licenseOpen(l: License | undefined, id: string, now = Date.now()): boolean {
-  return !!l && l.allowed.includes(id) && l.validUntil > Math.max(now, l.seenAt);
+  return !!l && (l.allowed.includes(id) || !!l.auto?.includes(id)) && l.validUntil > Math.max(now, l.seenAt);
 }
